@@ -5,7 +5,7 @@ import sys
 
 import actions
 import local_config
-from cozyfuse.interface import app
+#from cozyfuse.interface import app
 
 from argparse import RawTextHelpFormatter
 
