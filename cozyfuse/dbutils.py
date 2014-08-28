@@ -5,10 +5,10 @@ import random
 import requests
 import logging
 import datetime
-import ntpath
 
 import local_config
 import cache
+import fusepath
 
 
 from couchdb import Server, http
@@ -113,18 +113,16 @@ def get_files(db):
 def create_folder(db, folder):
     folderid = db.create(folder)
     folder = db[folderid]
-    folder_cache.add(folder["path"], folder)
 
-    dirname, filename = ntpath.split(folder["path"])
+    dirname, filename = (folder["path"], folder["name"])
     names = name_cache.get(dirname)
+    folder_cache.add(fusepath.join(dirname, filename), folder)
     if names is not None:
         names.append(filename)
 
 
 def get_folder(db, path):
-    if len(path) > 0 and path[0] != '/':
-        path = '/' + path
-
+    path = fusepath.normalize_path(path)
     try:
         folder = folder_cache.get(path)
         file_doc = file_cache.get(path)
@@ -136,16 +134,19 @@ def get_folder(db, path):
     return folder
 
 
-def update_folder(db, folder_doc):
-    db.save(folder_doc)
-    folder_cache.add(folder_doc["path"], db[folder_doc["_id"]])
+def update_folder(db, folder):
+    # TODO recuperer la derniere rev
+    db.save(folder)
+    dirname, filename = (folder["path"], folder["name"])
+    folder_cache.add(fusepath.join(dirname, filename), folder)
 
 
 def delete_folder(db, folder):
     db.delete(db[folder["_id"]])
 
-    folder_cache.remove(folder["path"])
-    dirname, filename = ntpath.split(folder["path"])
+    dirname, filename = (fusepath.normalize_path(folder["path"]), folder["name"])
+    folder_cache.remove(fusepath.join(dirname, filename))
+
     names = name_cache.get(dirname)
     if names is not None:
         names.remove(filename)
@@ -154,22 +155,23 @@ def delete_folder(db, folder):
 def create_file(db, file_doc):
     fileid = db.create(file_doc)
     file_doc = db[fileid]
-    file_cache.add(file_doc["path"], file_doc)
 
-    dirname, filename = ntpath.split(file_doc["path"])
+    dirname, filename = (fusepath.normalize_path(file_doc["path"]), file_doc["name"])
+    file_cache.add(fusepath.join(dirname, filename), file_doc)
     names = name_cache.get(dirname)
     if names is not None:
         names.append(filename)
 
 
 def update_file(db, file_doc):
+    # TODO recuperer la derniere rev
     db.save(file_doc)
-    file_cache.add(db[file_doc["_id"]])
+    dirname, filename = (fusepath.normalize_path(file_doc["path"]), file_doc["name"])
+    file_cache.add(fusepath.join(dirname, filename), file_doc)
 
 
 def get_file(db, path):
-    if len(path) > 0 and path[0] != '/':
-        path = '/' + path
+    path = fusepath.normalize_path(path)
 
     try:
         folder = folder_cache.get(path)
@@ -185,11 +187,14 @@ def get_file(db, path):
 def delete_file(db, file_doc):
     db.delete(db[file_doc["_id"]])
 
-    file_cache.remove(file_doc["path"])
-    dirname, filename = ntpath.split(file_doc["path"])
+    dirname, filename = (fusepath.normalize_path(file_doc["path"]), file_doc["name"])
+    file_cache.remove(fusepath.join(dirname, filename))
+
     names = name_cache.get(dirname)
     if names is not None:
         names.remove(filename)
+        name_cache.add(dirname, names)
+    return (dirname, filename, fusepath.join(dirname, filename))
 
 
 def get_names(db, path):

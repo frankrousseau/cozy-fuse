@@ -116,9 +116,9 @@ class CouchFSDocument(fuse.Fuse):
 
         # Configure Cozy
         device = dbutils.get_device(device_name)
-        self.urlCozy = device['url']
-        self.passwordCozy = device['password']
-        self.loginCozy = device['login']
+        self.urlCozy = device.get('url', '')
+        self.passwordCozy = device.get('password', '')
+        self.loginCozy = device_name
         logger.info('- Cozy configured')
 
         # Configure replication urls.
@@ -165,7 +165,7 @@ class CouchFSDocument(fuse.Fuse):
         for directory in '.', '..':
             yield fuse.Direntry(directory)
 
-        names = dbutils.get_names(self.db, path)
+        names = dbutils.get_names(self.db, path.decode('utf-8'))
         for name in names:
             yield fuse.Direntry(name.encode('utf-8'))
 
@@ -406,7 +406,7 @@ class CouchFSDocument(fuse.Fuse):
                     pass
 
                 self._clean_cache(path, True)
-                dbutils.delete_file(self.db, file_doc)
+                logger.info(dbutils.delete_file(self.db, file_doc))
                 self._update_parent_folder(file_doc['path'])
                 logger.info('file %s removed' % path)
                 return 0
@@ -486,71 +486,77 @@ class CouchFSDocument(fuse.Fuse):
         Rename file and subfiles (if it's a folder) in device.
         """
         logger.info("path rename %s -> %s: " % (pathfrom, pathto))
-        pathfrom = _normalize_path(pathfrom)
-        pathto = _normalize_path(pathto)
+        try:
+            pathfrom = _normalize_path(pathfrom)
+            pathto = _normalize_path(pathto)
 
-        file_doc = dbutils.get_file(self.db, pathfrom)
-        if file_doc is not None:
-            (file_path, name) = _path_split(pathto)
-            file_doc.update({
-                "name": name,
-                "path": file_path,
-                "lastModification": get_current_date()
-            })
-            dbutils.update_file(self.db, file_doc)
+            file_doc = dbutils.get_file(self.db, pathfrom)
+            if file_doc is not None:
+                (file_path, name) = _path_split(pathto)
+                file_doc.update({
+                    "name": name,
+                    "path": file_path,
+                    "lastModification": get_current_date()
+                })
+                dbutils.update_file(self.db, file_doc)
 
-            if root:
-                self._update_parent_folder(file_path)
-                # Change lastModification for file_path_from in case of file
-                # was moved
-                (file_path_from, name) = _path_split(pathfrom)
-                self._update_parent_folder(file_path_from)
+                if root:
+                    self._update_parent_folder(file_path)
+                    # Change lastModification for file_path_from in case of file
+                    # was moved
+                    (file_path_from, name) = _path_split(pathfrom)
+                    self._update_parent_folder(file_path_from)
 
-            names = dbutils.name_cache.get(pathfrom)
-            if names is not None:
-                dbutils.name_cache.remove(pathfrom)
-                dbutils.name_cache.add(pathto, names)
-            return 0
+                names = dbutils.name_cache.get(pathfrom)
+                if names is not None:
+                    dbutils.name_cache.remove(pathfrom)
+                    dbutils.name_cache.add(pathto, names)
+                return 0
 
-        folder_doc = dbutils.get_folder(self.db, pathfrom)
-        if folder_doc is not None:
+            folder_doc = dbutils.get_folder(self.db, pathfrom)
+            if folder_doc is not None:
+                (folder_path, name) = _path_split(pathto)
+                folder_doc.update({
+                    "name": name,
+                    "path": folder_path,
+                    "lastModification": get_current_date()
+                })
 
-            folder_doc.update({
-                "name": name,
-                "path": file_path,
-                "lastModification": get_current_date()
-            })
+                # Rename all subfiles
+                for res in self.db.view("file/byFolder", key=pathfrom):
+                    child_pathfrom = os.path.join(
+                        res.value['path'],
+                        res.value['name']
+                    )
+                    child_pathto = os.path.join(folder_path, name, res.value['name'])
+                    self.rename(child_pathfrom, child_pathto, False)
 
-            # Rename all subfiles
-            for res in self.db.view("file/byFolder", key=pathfrom):
-                child_pathfrom = os.path.join(
-                    res.value['path'],
-                    res.value['name']
-                )
-                child_pathto = os.path.join(file_path, name, res.value['name'])
-                self.rename(child_pathfrom, child_pathto, False)
+                for res in self.db.view("folder/byFolder", key=pathfrom):
+                    child_pathfrom = os.path.join(
+                        res.value['path'],
+                        res.value['name'])
+                    child_pathto = os.path.join(folder_path, name, res.value['name'])
+                    self.rename(child_pathfrom, child_pathto, False)
 
-            for res in self.db.view("folder/byFolder", key=pathfrom):
-                child_pathfrom = os.path.join(
-                    res.value['path'],
-                    res.value['name'])
-                child_pathto = os.path.join(file_path, name, res.value['name'])
-                self.rename(child_pathfrom, child_pathto, False)
+                if root:
+                    self._update_parent_folder(folder_path)
+                    # Change lastModification for file_path_from in case of file
+                    # was moved
+                    (file_path_from, name) = _path_split(pathfrom)
+                    self._update_parent_folder(file_path_from)
 
-            if root:
-                self._update_parent_folder(file_path)
-                # Change lastModification for file_path_from in case of file
-                # was moved
-                (file_path_from, name) = _path_split(pathfrom)
-                self._update_parent_folder(file_path_from)
 
-            dbutils.update_folder(self.db, folder_doc)
-            #names = dbutils.name_cache.get(pathfrom)
-            #if names is not None:
-                #dbutils.name_cache.remove(pathfrom)
-                #dbutils.name_cache.add(pathto, names)
+                dbutils.update_folder(self.db, folder_doc)
+                names = dbutils.name_cache.get(pathfrom)
+                if names is not None:
+                    dbutils.name_cache.remove(pathfrom)
+                    dbutils.name_cache.add(pathto, names)
 
-            return 0
+                return 0
+
+        except Exception as e:
+            logger.exception(e)
+            return -errno.ENOENT
 
     def fsync(self, path, isfsyncfile):
         """ TODO: look if something should be done there. """
