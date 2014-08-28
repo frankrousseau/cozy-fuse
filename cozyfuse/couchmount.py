@@ -159,7 +159,7 @@ class CouchFSDocument(fuse.Fuse):
         it arrives.
         """
         path = _normalize_path(path)
-        logger.info('readdir %s' % path)
+        #logger.info('readdir %s' % path)
 
         # this two folders are conventional in Unix system.
         for directory in '.', '..':
@@ -174,7 +174,7 @@ class CouchFSDocument(fuse.Fuse):
         Return file descriptor for given_path. Useful for 'ls -la' command
         like.
         """
-        logger.info('getattr %s' % path)
+        #logger.info('getattr %s' % path)
 
         try:
             st = CouchStat()
@@ -231,7 +231,7 @@ class CouchFSDocument(fuse.Fuse):
             path {string}: file path
             flags {string}: opening mode
         """
-        logger.info('open %s' % path)
+        #logger.info('open %s' % path)
         path = _normalize_path(path)
         try:
             file_doc = dbutils.get_file(self.db, path)
@@ -255,7 +255,7 @@ class CouchFSDocument(fuse.Fuse):
             offset {integer}=: beginning of file part to read
         """
         try:
-            logger.info('read %s' % path)
+            #logger.info('read %s' % path)
             path = _normalize_path(path)
 
             if not self.binary_cache.is_cached(path):
@@ -291,7 +291,7 @@ class CouchFSDocument(fuse.Fuse):
         """
         # TODO change to file descriptor
         # TODO write in binary cache
-        logger.info('write %s' % path)
+        #logger.info('write %s' % path)
         path = _normalize_path(path)
         if path not in self.writeBuffers:
             self.writeBuffers[path] = ''
@@ -309,7 +309,7 @@ class CouchFSDocument(fuse.Fuse):
             all memory mappings are unmapped.
         """
         # TODO add file to cache
-        logger.info('release %s' % path)
+        #logger.info('release %s' % path)
 
         try:
             path = _normalize_path(path)
@@ -327,9 +327,9 @@ class CouchFSDocument(fuse.Fuse):
 
                 binary = self.db[binary_id]
                 file_doc['binary']['file']['rev'] = binary['_rev']
-                dbutils.update_file(file_doc)
+                dbutils.update_file(self.db, file_doc)
 
-            logger.info("release is done")
+            #logger.info("release is done")
             self._clean_cache(path, True)
             return 0
 
@@ -348,7 +348,7 @@ class CouchFSDocument(fuse.Fuse):
                  major and minor numbers of the newly created device special
                  file
         """
-        logger.info('mknod %s' % path)
+        #logger.info('mknod %s' % path)
         try:
             path = _normalize_path(path)
             logger.info('mknod %s' % path)
@@ -377,7 +377,7 @@ class CouchFSDocument(fuse.Fuse):
                 'lastModification': now,
             }
             dbutils.create_file(self.db, newFile)
-            logger.info("file metadata created for %s" % path)
+            #logger.info("file metadata created for %s" % path)
             self._update_parent_folder(newFile['path'])
             logger.info('mknod is done for %s' % path)
             return 0
@@ -390,7 +390,7 @@ class CouchFSDocument(fuse.Fuse):
         Remove file from device.
         """
         # TODO remove binary cache
-        logger.info('unlink %s' % path)
+        #logger.info('unlink %s' % path)
         try:
             path = _normalize_path(path)
             dirname, filename = ntpath.split(path)
@@ -398,7 +398,6 @@ class CouchFSDocument(fuse.Fuse):
             file_doc = dbutils.get_file(self.db, path)
             if file_doc is not None:
                 binary_id = file_doc["binary"]["file"]["id"]
-                logger.info(self.db[file_doc["_id"]])
 
                 try:
                     self.db.delete(self.db[binary_id])
@@ -406,7 +405,6 @@ class CouchFSDocument(fuse.Fuse):
                     pass
 
                 self._clean_cache(path, True)
-                logger.info(dbutils.delete_file(self.db, file_doc))
                 self._update_parent_folder(file_doc['path'])
                 logger.info('file %s removed' % path)
                 return 0
@@ -436,7 +434,7 @@ class CouchFSDocument(fuse.Fuse):
             path {string}: diretory path
             mode {string}: directory permissions
         """
-        logger.info('mkdir %s' % path)
+        #logger.info('mkdir %s' % path)
         try:
             path = _normalize_path(path)
             (folder_path, name) = _path_split(path)
@@ -469,7 +467,7 @@ class CouchFSDocument(fuse.Fuse):
             path {string}: diretory path
         """
         # TODO remove file/attr cache
-        logger.info('rmdir %s' % path)
+        #logger.info('rmdir %s' % path)
         try:
             path = _normalize_path(path)
             folder = dbutils.get_folder(self.db, path)

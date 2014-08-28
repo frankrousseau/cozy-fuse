@@ -135,7 +135,8 @@ def get_folder(db, path):
 
 
 def update_folder(db, folder):
-    # TODO recuperer la derniere rev
+    current_folder = db[folder["_id"]]
+    folder["_rev"] = current_folder["_rev"]
     db.save(folder)
     dirname, filename = (folder["path"], folder["name"])
     folder_cache.add(fusepath.join(dirname, filename), folder)
@@ -164,7 +165,8 @@ def create_file(db, file_doc):
 
 
 def update_file(db, file_doc):
-    # TODO recuperer la derniere rev
+    current_file_doc = db[file_doc["_id"]]
+    file_doc["_rev"] = current_file_doc["_rev"]
     db.save(file_doc)
     dirname, filename = (fusepath.normalize_path(file_doc["path"]), file_doc["name"])
     file_cache.add(fusepath.join(dirname, filename), file_doc)
