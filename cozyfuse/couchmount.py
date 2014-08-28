@@ -404,6 +404,7 @@ class CouchFSDocument(fuse.Fuse):
                 except ResourceNotFound:
                     pass
 
+                dbutils.delete_file(self.db, file_doc)
                 self._clean_cache(path, True)
                 self._update_parent_folder(file_doc['path'])
                 logger.info('file %s removed' % path)
