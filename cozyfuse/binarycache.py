@@ -121,4 +121,4 @@ class BinaryCache:
         elif self.name in file_doc['storage']:
             file_doc['storage'].remove(self.name)
 
-        self.db.save(file_doc)
+        dbutils.update_file(self.db, file_doc)
