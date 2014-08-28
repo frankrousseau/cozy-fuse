@@ -95,7 +95,8 @@ class BinaryCache:
         (file_doc, binary_id, filename) = self.get_file_metadata(path)
 
         cache_file_folder = os.path.join(self.cache_path, binary_id)
-        shutil.rmtree(cache_file_folder)
+        if os.path.exists(cache_file_folder):
+            shutil.rmtree(cache_file_folder)
         self.mark_file_as_not_stored(file_doc)
 
     def mark_file_as_stored(self, file_doc):

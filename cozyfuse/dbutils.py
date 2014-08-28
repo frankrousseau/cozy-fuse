@@ -1,10 +1,14 @@
+import os
 import json
 import string
 import random
 import requests
 import logging
+import datetime
+import ntpath
 
 import local_config
+import cache
 
 
 from couchdb import Server, http
@@ -12,6 +16,13 @@ from couchdb.http import PreconditionFailed, ResourceConflict
 
 logger = logging.getLogger(__name__)
 local_config.configure_logger(logger)
+
+file_cache = cache.Cache()
+folder_cache = cache.Cache()
+name_cache = cache.Cache()
+
+
+ATTR_VALIDITY_PERIOD = datetime.timedelta(seconds=10)
 
 
 def create_db(database):
@@ -99,25 +110,106 @@ def get_files(db):
     return db.view("file/all")
 
 
+def create_folder(db, folder):
+    folderid = db.create(folder)
+    folder = db[folderid]
+    folder_cache.add(folder["path"], folder)
+
+    dirname, filename = ntpath.split(folder["path"])
+    names = name_cache.get(dirname)
+    if names is not None:
+        names.append(filename)
+
+
 def get_folder(db, path):
     if len(path) > 0 and path[0] != '/':
         path = '/' + path
 
     try:
-        folder = list(db.view("folder/byFullPath", key=path))[0].value
+        folder = folder_cache.get(path)
+        file_doc = file_cache.get(path)
+        if folder is None and file_doc is None:
+            folder = list(db.view("folder/byFullPath", key=path))[0].value
+            folder_cache.add(path, folder)
     except IndexError:
         folder = None
     return folder
 
 
+def update_folder(db, folder_doc):
+    db.save(folder_doc)
+    folder_cache.add(folder_doc["path"], db[folder_doc["_id"]])
+
+
+def delete_folder(db, folder):
+    db.delete(db[folder["_id"]])
+
+    folder_cache.remove(folder["path"])
+    dirname, filename = ntpath.split(folder["path"])
+    names = name_cache.get(dirname)
+    if names is not None:
+        names.remove(filename)
+
+
+def create_file(db, file_doc):
+    fileid = db.create(file_doc)
+    file_doc = db[fileid]
+    file_cache.add(file_doc["path"], file_doc)
+
+    dirname, filename = ntpath.split(file_doc["path"])
+    names = name_cache.get(dirname)
+    if names is not None:
+        names.append(filename)
+
+
+def update_file(db, file_doc):
+    db.save(file_doc)
+    file_cache.add(db[file_doc["_id"]])
+
+
 def get_file(db, path):
     if len(path) > 0 and path[0] != '/':
         path = '/' + path
+
     try:
-        file_doc = list(db.view("file/byFullPath", key=path))[0].value
+        folder = folder_cache.get(path)
+        file_doc = file_cache.get(path)
+        if file_doc is None and folder is None:
+            file_doc = list(db.view("file/byFullPath", key=path))[0].value
+            file_cache.add(path, file_doc)
     except IndexError:
         file_doc = None
     return file_doc
+
+
+def delete_file(db, file_doc):
+    db.delete(db[file_doc["_id"]])
+
+    file_cache.remove(file_doc["path"])
+    dirname, filename = ntpath.split(file_doc["path"])
+    names = name_cache.get(dirname)
+    if names is not None:
+        names.remove(filename)
+
+
+def get_names(db, path):
+    names = name_cache.get(path)
+    if names is None:
+        names = []
+
+        res = db.view('file/byFolder', key=path)
+        for doc in res:
+            name = doc.value["name"]
+            names.append(name)
+            file_cache.add(os.path.join(path, name), doc.value)
+
+        res = db.view('folder/byFolder', key=path)
+        for doc in res:
+            name = doc.value["name"]
+            names.append(name)
+            folder_cache.add(os.path.join(path, name), doc.value)
+
+    return names
 
 
 def get_random_key():

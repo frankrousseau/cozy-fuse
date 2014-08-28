@@ -17,10 +17,10 @@ import subprocess
 import logging
 import datetime
 import calendar
-import cache
 import ntpath
 import mimetypes
 
+import cache
 import dbutils
 import binarycache
 import local_config
@@ -134,7 +134,6 @@ class CouchFSDocument(fuse.Fuse):
             self.passwordCozy,
             self.urlCozy.split('/')[2]
         )
-        logger.info(self.rep_target)
         logger.info('- Replication configured')
 
         # Configure cache and create required folders
@@ -142,12 +141,17 @@ class CouchFSDocument(fuse.Fuse):
         device_path = os.path.join(CONFIG_FOLDER, device_name)
         self.binary_cache =  binarycache.BinaryCache(
             device_name, device_path, self.rep_source, mountpoint)
-
         self.file_size_cache = cache.Cache()
-        self.attr_cache = cache.Cache(ATTR_VALIDITY_PERIOD)
-        self.readdir_file_cache = cache.Cache(ATTR_VALIDITY_PERIOD)
-        self.readdir_folder_cache = cache.Cache(ATTR_VALIDITY_PERIOD)
+
         logger.info('- Cache configured')
+
+    def _add_to_cache(self, path, isfile=False):
+        pass
+
+    def _clean_cache(self, path, isfile=False):
+        if isfile:
+            self.binary_cache.remove(path)
+            self.file_size_cache.remove(path)
 
     def readdir(self, path, offset):
         """
@@ -161,19 +165,9 @@ class CouchFSDocument(fuse.Fuse):
         for directory in '.', '..':
             yield fuse.Direntry(directory)
 
-        res = self.readdir_file_cache.get(path)
-        if res is None:
-            res = self.db.view('file/byFolder', key=path)
-            self.readdir_file_cache.add(path, res)
-        for doc in res:
-            yield fuse.Direntry(doc.value['name'].encode('utf-8'))
-
-        res = self.readdir_folder_cache.get(path)
-        if res is None:
-            res = self.db.view('folder/byFolder', key=path)
-            self.readdir_folder_cache.add(path, res)
-        for doc in res:
-            yield fuse.Direntry(doc.value['name'].encode('utf-8'))
+        names = dbutils.get_names(self.db, path)
+        for name in names:
+            yield fuse.Direntry(name.encode('utf-8'))
 
     def getattr(self, path):
         """
@@ -183,16 +177,21 @@ class CouchFSDocument(fuse.Fuse):
         logger.info('getattr %s' % path)
 
         try:
-            st = self.attr_cache.get(path)
-            if st is None:
-                st = CouchStat()
+            st = CouchStat()
 
-                # Path is root
-                if path is "/":
-                    st.st_mode = stat.S_IFDIR | 0o775
-                    st.st_nlink = 2
+            # Path is root
+            if path is "/":
+                st.st_mode = stat.S_IFDIR | 0o775
+                st.st_nlink = 2
 
-                else:
+            else:
+                    dirname, filename = ntpath.split(path)
+                    dirname = _normalize_path(dirname)
+                    names = dbutils.name_cache.get(dirname)
+                    if names is not None and not filename in names:
+                        logger.info('File does not exist in cache: %s' % path)
+                        return -errno.ENOENT
+
                     # Or path is a folder
                     folder = dbutils.get_folder(self.db, path)
 
@@ -205,9 +204,8 @@ class CouchFSDocument(fuse.Fuse):
                             st.st_mtime = st.st_atime
 
                     else:
-                        # Or path is a file
                         file_doc = dbutils.get_file(self.db, path)
-
+                        # Or path is a file
                         if file_doc is not None:
                             st.st_mode = stat.S_IFREG | 0o664
                             st.st_nlink = 1
@@ -221,7 +219,6 @@ class CouchFSDocument(fuse.Fuse):
                         else:
                             logger.info('File does not exist: %s' % path)
                             return -errno.ENOENT
-                self.attr_cache.add(path, st)
             return st
 
         except Exception as e:
@@ -237,8 +234,8 @@ class CouchFSDocument(fuse.Fuse):
         logger.info('open %s' % path)
         path = _normalize_path(path)
         try:
-            res = self.db.view('file/byFullPath', key=path)
-            if len(res) > 0:
+            file_doc = dbutils.get_file(self.db, path)
+            if file_doc is not None:
                 #logger.info('%s found' % path)
                 return 0
             else:
@@ -330,9 +327,10 @@ class CouchFSDocument(fuse.Fuse):
 
                 binary = self.db[binary_id]
                 file_doc['binary']['file']['rev'] = binary['_rev']
-                self.db.save(file_doc)
+                dbutils.update_file(file_doc)
 
             logger.info("release is done")
+            self._clean_cache(path, True)
             return 0
 
         except Exception as e:
@@ -364,7 +362,6 @@ class CouchFSDocument(fuse.Fuse):
 
             rev = self.db[binary_id]["_rev"]
             now = get_current_date()
-            logger.info(type(name))
             newFile = {
                 "name": name.decode('utf8'),
                 "path": _normalize_path(file_path).decode('utf8'),
@@ -379,7 +376,7 @@ class CouchFSDocument(fuse.Fuse):
                 'creationDate': now,
                 'lastModification': now,
             }
-            self.db.create(newFile)
+            dbutils.create_file(self.db, newFile)
             logger.info("file metadata created for %s" % path)
             self._update_parent_folder(newFile['path'])
             logger.info('mknod is done for %s' % path)
@@ -392,7 +389,6 @@ class CouchFSDocument(fuse.Fuse):
         """
         Remove file from device.
         """
-        # TODO remove file/attr cache
         # TODO remove binary cache
         logger.info('unlink %s' % path)
         try:
@@ -408,9 +404,11 @@ class CouchFSDocument(fuse.Fuse):
                     self.db.delete(self.db[binary_id])
                 except ResourceNotFound:
                     pass
-                self.db.delete(self.db[file_doc["_id"]])
-                logger.info('file %s removed' % path)
+
+                self._clean_cache(path, True)
+                dbutils.delete_file(self.db, file_doc)
                 self._update_parent_folder(file_doc['path'])
+                logger.info('file %s removed' % path)
                 return 0
             else:
                 logger.info('Cannot delete file, no entry found')
@@ -438,7 +436,6 @@ class CouchFSDocument(fuse.Fuse):
             path {string}: diretory path
             mode {string}: directory permissions
         """
-        # TODO add file/attr cache
         logger.info('mkdir %s' % path)
         try:
             path = _normalize_path(path)
@@ -451,7 +448,7 @@ class CouchFSDocument(fuse.Fuse):
                 logger.info('folder already exists %s' % path)
                 return -errno.EEXIST
             else:
-                self.db.create({
+                dbutils.create_folder(self.db, {
                     "name": name,
                     "path": folder_path,
                     "docType": "Folder",
@@ -476,7 +473,8 @@ class CouchFSDocument(fuse.Fuse):
         try:
             path = _normalize_path(path)
             folder = dbutils.get_folder(self.db, path)
-            self.db.delete(self.db[folder['_id']])
+            dbutils.delete_folder(self.db, folder)
+            self._clean_cache(path)
             return 0
 
         except Exception as e:
@@ -497,9 +495,9 @@ class CouchFSDocument(fuse.Fuse):
             file_doc.update({
                 "name": name,
                 "path": file_path,
-                "lastModification": get_current_date(
-                )})
-            self.db.save(file_doc)
+                "lastModification": get_current_date()
+            })
+            dbutils.update_file(self.db, file_doc)
 
             if root:
                 self._update_parent_folder(file_path)
@@ -507,12 +505,16 @@ class CouchFSDocument(fuse.Fuse):
                 # was moved
                 (file_path_from, name) = _path_split(pathfrom)
                 self._update_parent_folder(file_path_from)
+
+            names = dbutils.name_cache.get(pathfrom)
+            if names is not None:
+                dbutils.name_cache.remove(pathfrom)
+                dbutils.name_cache.add(pathto, names)
             return 0
 
-        folder_doc = dbutils.get_file(self.db, pathfrom)
+        folder_doc = dbutils.get_folder(self.db, pathfrom)
         if folder_doc is not None:
 
-            (file_path, name) = _path_split(pathto)
             folder_doc.update({
                 "name": name,
                 "path": file_path,
@@ -542,7 +544,12 @@ class CouchFSDocument(fuse.Fuse):
                 (file_path_from, name) = _path_split(pathfrom)
                 self._update_parent_folder(file_path_from)
 
-            self.db.save(folder_doc)
+            dbutils.update_folder(self.db, folder_doc)
+            #names = dbutils.name_cache.get(pathfrom)
+            #if names is not None:
+                #dbutils.name_cache.remove(pathfrom)
+                #dbutils.name_cache.add(pathto, names)
+
             return 0
 
     def fsync(self, path, isfsyncfile):
@@ -617,7 +624,7 @@ class CouchFSDocument(fuse.Fuse):
         folder = dbutils.get_folder(self.db, parent_folder)
         if folder is not None:
             folder['lastModification'] = get_current_date()
-            self.db.save(folder)
+            dbutils.update_folder(self.db, folder)
 
 
 def _normalize_path(path):
