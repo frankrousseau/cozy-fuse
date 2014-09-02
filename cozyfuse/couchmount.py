@@ -70,7 +70,6 @@ def get_date(ctime):
 
 
 class CouchStat(fuse.Stat):
-
     '''
     Default file descriptor.
     '''
@@ -90,11 +89,10 @@ class CouchStat(fuse.Stat):
 
 
 class CouchFSDocument(fuse.Fuse):
-
     '''
     Fuse implementation behavior: handles synchronisation with device when a
     change occurs or when users want to access to his/her file system.
-   '''
+    '''
 
     def __init__(self, device_name, mountpoint, uri=None, *args, **kwargs):
         '''
@@ -142,6 +140,7 @@ class CouchFSDocument(fuse.Fuse):
         self.binary_cache =  binarycache.BinaryCache(
             device_name, device_path, self.rep_source, mountpoint)
         self.file_size_cache = cache.Cache()
+        self.attr_cache = cache.Cache()
 
         logger.info('- Cache configured')
 
@@ -149,6 +148,7 @@ class CouchFSDocument(fuse.Fuse):
         pass
 
     def _clean_cache(self, path, isfile=False):
+        self.attr_cache.remove(path)
         if isfile:
             self.binary_cache.remove(path)
             self.file_size_cache.remove(path)
@@ -159,7 +159,7 @@ class CouchFSDocument(fuse.Fuse):
         it arrives.
         """
         path = _normalize_path(path)
-        #logger.info('readdir %s' % path)
+        logger.info('readdir %s' % path)
 
         # this two folders are conventional in Unix system.
         for directory in '.', '..':
@@ -174,10 +174,15 @@ class CouchFSDocument(fuse.Fuse):
         Return file descriptor for given_path. Useful for 'ls -la' command
         like.
         """
-        #logger.info('getattr %s' % path)
+        logger.info('getattr %s' % path)
 
         try:
             st = CouchStat()
+
+            # Try to get attribute from local cache.
+            attr = self.attr_cache.get(path)
+            if attr is not None:
+                return attr
 
             # Path is root
             if path is "/":
@@ -185,40 +190,42 @@ class CouchFSDocument(fuse.Fuse):
                 st.st_nlink = 2
 
             else:
-                    dirname, filename = ntpath.split(path)
-                    dirname = _normalize_path(dirname)
-                    names = dbutils.name_cache.get(dirname)
-                    if names is not None and not filename in names:
-                        logger.info('File does not exist in cache: %s' % path)
-                        return -errno.ENOENT
+                dirname, filename = ntpath.split(path)
+                if dirname == '/':
+                    dirname = ''
+                names = dbutils.get_names(self.db, dirname.decode('utf-8'))
+                if not filename.decode('utf-8') in names:
+                    logger.info('File does not exist in cache: %s' % path)
+                    return -errno.ENOENT
 
-                    # Or path is a folder
-                    folder = dbutils.get_folder(self.db, path)
+                # Or path is a folder
+                folder = dbutils.get_folder(self.db, path)
 
-                    if folder is not None:
-                        st.st_mode = stat.S_IFDIR | 0o775
-                        st.st_nlink = 2
-                        if 'lastModification' in folder:
-                            st.st_atime = get_date(folder['lastModification'])
+                if folder is not None:
+                    st.st_mode = stat.S_IFDIR | 0o775
+                    st.st_nlink = 2
+                    if 'lastModification' in folder:
+                        st.st_atime = get_date(folder['lastModification'])
+                        st.st_ctime = st.st_atime
+                        st.st_mtime = st.st_atime
+
+                else:
+                    file_doc = dbutils.get_file(self.db, path)
+                    # Or path is a file
+                    if file_doc is not None:
+                        st.st_mode = stat.S_IFREG | 0o664
+                        st.st_nlink = 1
+                        st.st_size = file_doc.get('size', 4096)
+                        if 'lastModification' in file_doc:
+                            st.st_atime = \
+                                get_date(file_doc['lastModification'])
                             st.st_ctime = st.st_atime
                             st.st_mtime = st.st_atime
 
                     else:
-                        file_doc = dbutils.get_file(self.db, path)
-                        # Or path is a file
-                        if file_doc is not None:
-                            st.st_mode = stat.S_IFREG | 0o664
-                            st.st_nlink = 1
-                            st.st_size = file_doc.get('size', 4096)
-                            if 'lastModification' in file_doc:
-                                st.st_atime = \
-                                    get_date(file_doc['lastModification'])
-                                st.st_ctime = st.st_atime
-                                st.st_mtime = st.st_atime
-
-                        else:
-                            logger.info('File does not exist: %s' % path)
-                            return -errno.ENOENT
+                        logger.info('File does not exist: %s' % path)
+                        return -errno.ENOENT
+            self.attr_cache.add(path, st)
             return st
 
         except Exception as e:
@@ -231,7 +238,7 @@ class CouchFSDocument(fuse.Fuse):
             path {string}: file path
             flags {string}: opening mode
         """
-        #logger.info('open %s' % path)
+        logger.info('open %s' % path)
         path = _normalize_path(path)
         try:
             file_doc = dbutils.get_file(self.db, path)
@@ -255,7 +262,7 @@ class CouchFSDocument(fuse.Fuse):
             offset {integer}=: beginning of file part to read
         """
         try:
-            #logger.info('read %s' % path)
+            logger.info('read %s' % path)
             path = _normalize_path(path)
 
             if not self.binary_cache.is_cached(path):
@@ -291,7 +298,7 @@ class CouchFSDocument(fuse.Fuse):
         """
         # TODO change to file descriptor
         # TODO write in binary cache
-        #logger.info('write %s' % path)
+        logger.info('write %s' % path)
         path = _normalize_path(path)
         if path not in self.writeBuffers:
             self.writeBuffers[path] = ''
@@ -309,7 +316,7 @@ class CouchFSDocument(fuse.Fuse):
             all memory mappings are unmapped.
         """
         # TODO add file to cache
-        #logger.info('release %s' % path)
+        logger.info('release %s' % path)
 
         try:
             path = _normalize_path(path)
@@ -329,7 +336,7 @@ class CouchFSDocument(fuse.Fuse):
                 file_doc['binary']['file']['rev'] = binary['_rev']
                 dbutils.update_file(self.db, file_doc)
 
-            #logger.info("release is done")
+            # logger.info("release is done")
             self._clean_cache(path, True)
             return 0
 
@@ -348,7 +355,7 @@ class CouchFSDocument(fuse.Fuse):
                  major and minor numbers of the newly created device special
                  file
         """
-        #logger.info('mknod %s' % path)
+        logger.info('mknod %s' % path)
         try:
             path = _normalize_path(path)
             logger.info('mknod %s' % path)
@@ -390,7 +397,7 @@ class CouchFSDocument(fuse.Fuse):
         Remove file from device.
         """
         # TODO remove binary cache
-        #logger.info('unlink %s' % path)
+        logger.info('unlink %s' % path)
         try:
             path = _normalize_path(path)
             dirname, filename = ntpath.split(path)
