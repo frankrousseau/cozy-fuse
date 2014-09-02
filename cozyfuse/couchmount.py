@@ -19,6 +19,7 @@ import datetime
 import calendar
 import ntpath
 import mimetypes
+import re
 
 import cache
 import dbutils
@@ -30,6 +31,7 @@ from couchdb import ResourceNotFound
 ATTR_VALIDITY_PERIOD = datetime.timedelta(seconds=10)
 
 DEVNULL = open(os.devnull, 'wb')
+EXCLUDED_PATTERNS = ['^\.(.*)', '(.*)~$']
 
 fuse.fuse_python_api = (0, 2)
 
@@ -40,33 +42,6 @@ HDLR.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
 logger = logging.getLogger(__name__)
 logger.addHandler(HDLR)
 logger.setLevel(logging.INFO)
-
-
-def get_current_date():
-    """
-    Get current date : Return current date with format 'Y-m-d T H:M:S'
-        Exemple : 2014-05-07T09:17:48
-    """
-    return datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
-
-
-def get_date(ctime):
-    ctime = ctime[0:24]
-    try:
-        date = datetime.datetime.strptime(ctime, "%Y-%m-%dT%H:%M:%S")
-    except ValueError:
-        try:
-            date = datetime.datetime.strptime(ctime, "%Y-%m-%dT%H:%M:%S.%fZ")
-        except ValueError:
-            try:
-                date = datetime.datetime.strptime(
-                    ctime,
-                    "%a %b %d %Y %H:%M:%S")
-            except ValueError:
-                date = datetime.datetime.strptime(
-                    ctime,
-                    "%a %b %d %H:%M:%S %Y")
-    return calendar.timegm(date.utctimetuple())
 
 
 class CouchStat(fuse.Stat):
@@ -86,6 +61,27 @@ class CouchStat(fuse.Stat):
         self.st_mtime = 0
         self.st_ctime = 0
         self.st_blocks = 0
+
+    def set_root(self):
+        self.st_mode = stat.S_IFDIR | 0o775
+        self.st_nlink = 2
+
+    def set_folder(self, folder):
+        self.st_mode = stat.S_IFDIR | 0o775
+        self.st_nlink = 2
+        if 'lastModification' in folder:
+            self.st_atime = get_date(folder['lastModification'])
+            self.st_ctime = self.st_atime
+            self.st_mtime = self.st_atime
+
+    def set_file(self, file_doc):
+        self.self_mode = stat.S_IFREG | 0o664
+        self.self_nlink = 1
+        self.self_size = file_doc.get('size', 4096)
+        if 'lastModification' in file_doc:
+            self.self_atime = get_date(file_doc['lastModification'])
+            self.self_ctime = self.self_atime
+            self.self_mtime = self.self_atime
 
 
 class CouchFSDocument(fuse.Fuse):
@@ -144,28 +140,15 @@ class CouchFSDocument(fuse.Fuse):
 
         logger.info('- Cache configured')
 
-    def _add_to_cache(self, path, isfile=False):
-        pass
-
-    def _clean_cache(self, path, isfile=False):
-        self.attr_cache.remove(path)
-        if isfile:
-            self.binary_cache.remove(path)
-            self.file_size_cache.remove(path)
-
     def readdir(self, path, offset):
         """
         Generator: list files for given path and yield each file result when
         it arrives.
         """
-        path = _normalize_path(path)
         logger.info('readdir %s' % path)
+        path = _normalize_path(path)
 
-        # this two folders are conventional in Unix system.
-        for directory in '.', '..':
-            yield fuse.Direntry(directory)
-
-        names = dbutils.get_names(self.db, path.decode('utf-8'))
+        names = ['.', '..'] + dbutils.get_names(self.db, path.decode('utf-8'))
         for name in names:
             yield fuse.Direntry(name.encode('utf-8'))
 
@@ -174,59 +157,42 @@ class CouchFSDocument(fuse.Fuse):
         Return file descriptor for given_path. Useful for 'ls -la' command
         like.
         """
-        logger.info('getattr %s' % path)
-
         try:
-            st = CouchStat()
+            logger.info('getattr %s' % path)
 
             # Try to get attribute from local cache.
             attr = self.attr_cache.get(path)
             if attr is not None:
                 return attr
 
-            # Path is root
-            if path is "/":
-                st.st_mode = stat.S_IFDIR | 0o775
-                st.st_nlink = 2
-
             else:
-                dirname, filename = ntpath.split(path)
-                if dirname == '/':
-                    dirname = ''
-                names = dbutils.get_names(self.db, dirname.decode('utf-8'))
-                if not filename.decode('utf-8') in names:
-                    logger.info('File does not exist in cache: %s' % path)
-                    return -errno.ENOENT
+                st = CouchStat()
 
-                # Or path is a folder
-                folder = dbutils.get_folder(self.db, path)
-
-                if folder is not None:
-                    st.st_mode = stat.S_IFDIR | 0o775
-                    st.st_nlink = 2
-                    if 'lastModification' in folder:
-                        st.st_atime = get_date(folder['lastModification'])
-                        st.st_ctime = st.st_atime
-                        st.st_mtime = st.st_atime
+                if path == "/":
+                    st.set_root()
 
                 else:
-                    file_doc = dbutils.get_file(self.db, path)
-                    # Or path is a file
-                    if file_doc is not None:
-                        st.st_mode = stat.S_IFREG | 0o664
-                        st.st_nlink = 1
-                        st.st_size = file_doc.get('size', 4096)
-                        if 'lastModification' in file_doc:
-                            st.st_atime = \
-                                get_date(file_doc['lastModification'])
-                            st.st_ctime = st.st_atime
-                            st.st_mtime = st.st_atime
-
-                    else:
-                        logger.info('File does not exist: %s' % path)
+                    # Avoid to check in database if non existing file/folder
+                    # exists.
+                    if self._in_list_cache(path):
                         return -errno.ENOENT
-            self.attr_cache.add(path, st)
-            return st
+
+                    # Check if path is a folder.
+                    folder = dbutils.get_folder(self.db, path)
+                    if folder is not None:
+                        st.set_folder(folder)
+
+                    # Check if path is a file.
+                    else:
+                        file_doc = dbutils.get_file(self.db, path)
+                        if file_doc is not None:
+                            st.set_file(file_doc)
+                        else:
+                            logger.info('File does not exist: %s' % path)
+                            return -errno.ENOENT
+
+                self.attr_cache.add(path, st)
+                return st
 
         except Exception as e:
             logger.exception(e)
@@ -238,17 +204,10 @@ class CouchFSDocument(fuse.Fuse):
             path {string}: file path
             flags {string}: opening mode
         """
-        logger.info('open %s' % path)
-        path = _normalize_path(path)
         try:
-            file_doc = dbutils.get_file(self.db, path)
-            if file_doc is not None:
-                #logger.info('%s found' % path)
-                return 0
-            else:
-                logger.error('File not found %s' % path)
-                return -errno.ENOENT
+            logger.info('open %s' % path)
 
+            return self._is_found(path)
         except Exception as e:
             logger.exception(e)
             return -errno.ENOENT
@@ -265,27 +224,7 @@ class CouchFSDocument(fuse.Fuse):
             logger.info('read %s' % path)
             path = _normalize_path(path)
 
-            if not self.binary_cache.is_cached(path):
-                self.binary_cache.add(path)
-
-            with self.binary_cache.get(path) as binary_attachment:
-
-                content_length = self.file_size_cache.get(path)
-                if content_length is None:
-                    fileno = binary_attachment.fileno()
-                    content_length = os.fstat(fileno).st_size
-                    self.file_size_cache.add(path, content_length)
-
-                if offset < content_length:
-                    if offset + size > content_length:
-                        size = content_length - offset
-                    binary_attachment.seek(offset)
-                    buf = binary_attachment.read(size)
-                else:
-                    buf = ''
-
-            return buf
-
+            return self._get_buf_from_binary(path, offset, size)
         except Exception as e:
             logger.exception(e)
             return -errno.ENOENT
@@ -296,13 +235,15 @@ class CouchFSDocument(fuse.Fuse):
             path {string}: file path
             buf {buffer}: data to write
         """
-        # TODO change to file descriptor
-        # TODO write in binary cache
         logger.info('write %s' % path)
         path = _normalize_path(path)
-        if path not in self.writeBuffers:
-            self.writeBuffers[path] = ''
-        self.writeBuffers[path] = self.writeBuffers[path] + buf
+
+        if self.binary_cache.is_cached(path):
+            self.binary_cache.update(path, offset, buf)
+        else:
+            if path not in self.writeBuffers:
+                self.writeBuffers[path] = ''
+            self.writeBuffers[path] = self.writeBuffers[path] + buf
         return len(buf)
 
     def release(self, path, fuse_file_info):
@@ -316,25 +257,18 @@ class CouchFSDocument(fuse.Fuse):
             all memory mappings are unmapped.
         """
         # TODO add file to cache
-        logger.info('release %s' % path)
 
         try:
+            logger.info('release %s' % path)
             path = _normalize_path(path)
-            file_doc = dbutils.get_file(self.db, path)
-            binary_id = file_doc["binary"]["file"]["id"]
 
             if path in self.writeBuffers:
                 data = self.writeBuffers[path]
-                self.db.put_attachment(self.db[binary_id],
-                                       data,
-                                       filename="file")
-                file_doc['size'] = len(data)
-                file_doc['lastModification'] = get_current_date()
+                self._create_new_file(path, data)
                 self.writeBuffers.pop(path, None)
-
-                binary = self.db[binary_id]
-                file_doc['binary']['file']['rev'] = binary['_rev']
-                dbutils.update_file(self.db, file_doc)
+            else:
+                with self.binary_cache.get(path) as binary:
+                    self._update_file(path, binary.read())
 
             # logger.info("release is done")
             self._clean_cache(path, True)
@@ -355,37 +289,13 @@ class CouchFSDocument(fuse.Fuse):
                  major and minor numbers of the newly created device special
                  file
         """
-        logger.info('mknod %s' % path)
         try:
-            path = _normalize_path(path)
             logger.info('mknod %s' % path)
-            (file_path, name) = _path_split(path)
+            path = _normalize_path(path)
 
-            file_path = _normalize_path(file_path)
-            new_binary = {"docType": "Binary"}
-            binary_id = self.db.create(new_binary)
-            self.db.put_attachment(self.db[binary_id], '', filename="file")
-            (mime_type, encoding) = mimetypes.guess_type(path)
-
-            rev = self.db[binary_id]["_rev"]
-            now = get_current_date()
-            newFile = {
-                "name": name.decode('utf8'),
-                "path": _normalize_path(file_path).decode('utf8'),
-                "binary": {
-                    "file": {
-                        "id": binary_id,
-                        "rev": rev
-                    }
-                },
-                "docType": "File",
-                "mime": mime_type,
-                'creationDate': now,
-                'lastModification': now,
-            }
-            dbutils.create_file(self.db, newFile)
-            #logger.info("file metadata created for %s" % path)
-            self._update_parent_folder(newFile['path'])
+            binary_id = self._create_empty_binary_in_db()
+            self._create_new_file_in_db(path, binary_id)
+            self._update_parent_folder(path)
             logger.info('mknod is done for %s' % path)
             return 0
         except Exception as e:
@@ -396,25 +306,15 @@ class CouchFSDocument(fuse.Fuse):
         """
         Remove file from device.
         """
-        # TODO remove binary cache
-        logger.info('unlink %s' % path)
         try:
+            logger.info('unlink %s' % path)
             path = _normalize_path(path)
-            dirname, filename = ntpath.split(path)
 
-            file_doc = dbutils.get_file(self.db, path)
-            if file_doc is not None:
-                binary_id = file_doc["binary"]["file"]["id"]
-
-                try:
-                    self.db.delete(self.db[binary_id])
-                except ResourceNotFound:
-                    pass
-
-                dbutils.delete_file(self.db, file_doc)
+            if dbutils.get_file(path) is not None:
+                self._remove_file_from_db(path)
+                self.binary_cache.remove(path)
                 self._clean_cache(path, True)
-                self._update_parent_folder(file_doc['path'])
-                logger.info('file %s removed' % path)
+                self._update_parent_folder(path)
                 return 0
             else:
                 logger.info('Cannot delete file, no entry found')
@@ -637,6 +537,142 @@ class CouchFSDocument(fuse.Fuse):
         if folder is not None:
             folder['lastModification'] = get_current_date()
             dbutils.update_folder(self.db, folder)
+
+    def _is_found(self, path):
+        path = _normalize_path(path)
+        file_doc = dbutils.get_file(self.db, path)
+        if file_doc is not None:
+            #logger.info('%s found' % path)
+            return 0
+        else:
+            #logger.error('File not found %s' % path)
+            return -errno.ENOENT
+
+    def _get_buf_from_binary(self, path, offset, size):
+        if not self.binary_cache.is_cached(path):
+            self.binary_cache.add(path)
+
+        with self.binary_cache.get(path) as binary_attachment:
+
+            content_length = self.file_size_cache.get(path)
+            if content_length is None:
+                fileno = binary_attachment.fileno()
+                content_length = os.fstat(fileno).st_size
+                self.file_size_cache.add(path, content_length)
+
+            if offset < content_length:
+                if offset + size > content_length:
+                    size = content_length - offset
+                binary_attachment.seek(offset)
+                buf = binary_attachment.read(size)
+            else:
+                buf = ''
+
+        return buf
+
+    def _create_new_file(self, path, data):
+        file_doc = dbutils.get_file(self.db, path)
+        #binary_id = file_doc["binary"]["file"]["id"]
+        self.binary_cache.add(path, data)
+        # TODO Run that part into a thread and run it in a queue
+        #self.db.put_attachment(self.db[binary_id],
+        #                       data,
+        #                       filename="file")
+        file_doc['size'] = len(data)
+        file_doc['lastModification'] = get_current_date()
+        # TODO do that after uploading.
+        #binary = self.db[binary_id]
+        #file_doc['binary']['file']['rev'] = binary['_rev']
+        dbutils.update_file(self.db, file_doc)
+
+    def _update_file(self, path, data):
+        # Upload file from cache via a thread
+        pass
+
+    def _create_empty_binary_in_db(self):
+        new_binary = {"docType": "Binary"}
+        binary_id = self.db.create(new_binary)
+        self.db.put_attachment(self.db[binary_id], '', filename="file")
+
+    def _create_new_file_in_db(self, path, binary_id):
+        (file_path, name) = _path_split(path)
+        file_path = _normalize_path(file_path)
+        (mime_type, encoding) = mimetypes.guess_type(path)
+        rev = self.db[binary_id]["_rev"]
+        now = get_current_date()
+        newFile = {
+            "name": name.decode('utf8'),
+            "path": _normalize_path(file_path).decode('utf8'),
+            "binary": {
+                "file": {
+                    "id": binary_id,
+                    "rev": rev
+                }
+            },
+            "docType": "File",
+            "mime": mime_type,
+            'creationDate': now,
+            'lastModification': now,
+        }
+        dbutils.create_file(self.db, newFile)
+
+    def _remove_path_from_db(self, path):
+        '''
+        Remove binary if it exists, then remove file document.
+        '''
+        file_doc = dbutils.get_file(self.db, path)
+        binary_id = file_doc["binary"]["file"]["id"]
+        try:
+            self.db.delete(self.db[binary_id])
+        except ResourceNotFound:
+            pass
+        dbutils.delete_file(self.db, file_doc)
+
+
+    def _is_in_list_cache(self, path):
+        dirname, filename = ntpath.split(path)
+        if dirname == '/':
+            dirname = ''
+        names = dbutils.get_names(self.db, dirname.decode('utf-8'))
+        if not filename.decode('utf-8') in names:
+            logger.info('File does not exist in cache: %s' % path)
+
+    def _add_to_cache(self, path, isfile=False):
+        pass
+
+    def _clean_cache(self, path, isfile=False):
+        self.writeBuffers.pop(path, None)
+        self.attr_cache.remove(path)
+        if isfile:
+            self.binary_cache.remove(path)
+            self.file_size_cache.remove(path)
+
+
+def get_current_date():
+    """
+    Get current date : Return current date with format 'Y-m-d T H:M:S'
+        Exemple : 2014-05-07T09:17:48
+    """
+    return datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+
+
+def get_date(ctime):
+    ctime = ctime[0:24]
+    try:
+        date = datetime.datetime.strptime(ctime, "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        try:
+            date = datetime.datetime.strptime(ctime, "%Y-%m-%dT%H:%M:%S.%fZ")
+        except ValueError:
+            try:
+                date = datetime.datetime.strptime(
+                    ctime,
+                    "%a %b %d %Y %H:%M:%S")
+            except ValueError:
+                date = datetime.datetime.strptime(
+                    ctime,
+                    "%a %b %d %H:%M:%S %Y")
+    return calendar.timegm(date.utctimetuple())
 
 
 def _normalize_path(path):

@@ -53,15 +53,15 @@ class BinaryCache:
 
         return os.path.exists(filename)
 
-    def get(self, path):
+    def get(self, path, mode='rb'):
         '''
         Returns the required file from the cache (local file system).
         '''
         (file_doc, binary_id, filename) = self.get_file_metadata(path)
 
-        return open(filename, 'rb')
+        return open(filename, mode)
 
-    def add(self, path):
+    def add(self, path, data=None):
         '''
         Download binary from local CouchDB and save it in the cache folder.
         File is marked as stored in the file metadata.
@@ -74,19 +74,30 @@ class BinaryCache:
             os.mkdir(cache_file_folder)
 
         # Download file.
-        url = '%s/%s/%s' % (self.remote_url, binary_id, 'file')
-        req = requests.get(url, stream=True)
-        if req.status_code != 200:
-            raise exceptions.IOError(
-                "File not stored in the local CouchDB database %s" % url)
-        else:
-            with open(filename, 'wb') as fd:
-                for chunk in req.iter_content(1024):
-                    fd.write(chunk)
 
-            # Update metadata.
-            file_doc['size'] = os.path.getsize(filename)
-            self.mark_file_as_stored(file_doc)
+        if data:
+            with open(filename, 'wb') as fd:
+                fd.write(data)
+        else:
+            url = '%s/%s/%s' % (self.remote_url, binary_id, 'file')
+            req = requests.get(url, stream=True)
+            if req.status_code != 200:
+                raise exceptions.IOError(
+                    "File not stored in the local CouchDB database %s" % url)
+            else:
+                with open(filename, 'wb') as fd:
+                    for chunk in req.iter_content(1024):
+                        fd.write(chunk)
+
+        # Update metadata.
+        file_doc['size'] = os.path.getsize(filename)
+        self.mark_file_as_stored(file_doc)
+
+    def update(self, path, offset, buf):
+        with self.get(path, 'wb') as binary:
+            binary.seek(offset)
+            binary.write(buf)
+            binary.close()
 
     def remove(self, path):
         '''
