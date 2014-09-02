@@ -199,26 +199,6 @@ def delete_file(db, file_doc):
     return (dirname, filename, fusepath.join(dirname, filename))
 
 
-def get_names(db, path):
-    names = name_cache.get(path)
-    if names is None:
-        names = []
-
-        res = db.view('file/byFolder', key=path)
-        for doc in res:
-            name = doc.value["name"]
-            names.append(name)
-            file_cache.add(os.path.join(path, name), doc.value)
-
-        res = db.view('folder/byFolder', key=path)
-        for doc in res:
-            name = doc.value["name"]
-            names.append(name)
-            folder_cache.add(os.path.join(path, name), doc.value)
-
-    return names
-
-
 def get_random_key():
     '''
     Generate a random key of 20 chars. The first character is not a number

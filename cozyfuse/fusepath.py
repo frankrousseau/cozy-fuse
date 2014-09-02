@@ -9,10 +9,13 @@ def normalize_path(path):
     parts = path.split('/')
     parts = [part for part in parts if part != '']
     path = '/'.join(parts)
+    if type(path) is str:
+        path = path.decode('utf-8')
+
     if len(path) == 0:
-        return ''
+        return u''
     else:
-        return '/' + path
+        return u'/' + path
 
 def join(basepath, filename):
     return normalize_path(os.path.join(basepath, filename))

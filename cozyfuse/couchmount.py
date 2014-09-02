@@ -22,6 +22,7 @@ import mimetypes
 import re
 
 import cache
+import fusepath
 import dbutils
 import binarycache
 import local_config
@@ -75,13 +76,13 @@ class CouchStat(fuse.Stat):
             self.st_mtime = self.st_atime
 
     def set_file(self, file_doc):
-        self.self_mode = stat.S_IFREG | 0o664
-        self.self_nlink = 1
-        self.self_size = file_doc.get('size', 4096)
+        self.st_mode = stat.S_IFREG | 0o664
+        self.st_nlink = 1
+        self.st_size = file_doc.get('size', 4096)
         if 'lastModification' in file_doc:
-            self.self_atime = get_date(file_doc['lastModification'])
-            self.self_ctime = self.self_atime
-            self.self_mtime = self.self_atime
+            self.st_atime = get_date(file_doc['lastModification'])
+            self.st_ctime = self.st_atime
+            self.st_mtime = self.st_atime
 
 
 class CouchFSDocument(fuse.Fuse):
@@ -133,10 +134,11 @@ class CouchFSDocument(fuse.Fuse):
         # Configure cache and create required folders
         self.writeBuffers = {}
         device_path = os.path.join(CONFIG_FOLDER, device_name)
-        self.binary_cache =  binarycache.BinaryCache(
+        self.binary_cache = binarycache.BinaryCache(
             device_name, device_path, self.rep_source, mountpoint)
         self.file_size_cache = cache.Cache()
         self.attr_cache = cache.Cache()
+        self.name_cache = cache.Cache()
 
         logger.info('- Cache configured')
 
@@ -145,12 +147,12 @@ class CouchFSDocument(fuse.Fuse):
         Generator: list files for given path and yield each file result when
         it arrives.
         """
-        logger.info('readdir %s' % path)
-        path = _normalize_path(path)
+        logger.info('readdir %d %s' % (offset, path))
+        path = fusepath.normalize_path(path)
 
-        names = ['.', '..'] + dbutils.get_names(self.db, path.decode('utf-8'))
+        names = ['.', '..'] + self._get_names(path)
         for name in names:
-            yield fuse.Direntry(name.encode('utf-8'))
+            yield fuse.Direntry(name.encode('utf-_8'))
 
     def getattr(self, path):
         """
@@ -166,33 +168,25 @@ class CouchFSDocument(fuse.Fuse):
                 return attr
 
             else:
-                st = CouchStat()
 
                 if path == "/":
+                    st = CouchStat()
                     st.set_root()
 
                 else:
                     # Avoid to check in database if non existing file/folder
                     # exists.
-                    if self._in_list_cache(path):
+                    if not self._is_in_list_cache(path):
+                        logger.info('Not found (not in list cache): %s' % path)
                         return -errno.ENOENT
-
-                    # Check if path is a folder.
-                    folder = dbutils.get_folder(self.db, path)
-                    if folder is not None:
-                        st.set_folder(folder)
-
-                    # Check if path is a file.
                     else:
-                        file_doc = dbutils.get_file(self.db, path)
-                        if file_doc is not None:
-                            st.set_file(file_doc)
-                        else:
-                            logger.info('File does not exist: %s' % path)
-                            return -errno.ENOENT
+                        st = self._get_attr_from_db(path)
 
-                self.attr_cache.add(path, st)
-                return st
+                if st is None:
+                    logger.info('Not found (not in database): %s' % path)
+                    return -errno.ENOENT
+                else:
+                    return st
 
         except Exception as e:
             logger.exception(e)
@@ -222,7 +216,7 @@ class CouchFSDocument(fuse.Fuse):
         """
         try:
             logger.info('read %s' % path)
-            path = _normalize_path(path)
+            path = fusepath.normalize_path(path)
 
             return self._get_buf_from_binary(path, offset, size)
         except Exception as e:
@@ -236,7 +230,7 @@ class CouchFSDocument(fuse.Fuse):
             buf {buffer}: data to write
         """
         logger.info('write %s' % path)
-        path = _normalize_path(path)
+        path = fusepath._normalize_path(path)
 
         if self.binary_cache.is_cached(path):
             self.binary_cache.update(path, offset, buf)
@@ -291,7 +285,7 @@ class CouchFSDocument(fuse.Fuse):
         """
         try:
             logger.info('mknod %s' % path)
-            path = _normalize_path(path)
+            path = fusepath.normalize_path(path)
 
             binary_id = self._create_empty_binary_in_db()
             self._create_new_file_in_db(path, binary_id)
@@ -308,7 +302,7 @@ class CouchFSDocument(fuse.Fuse):
         """
         try:
             logger.info('unlink %s' % path)
-            path = _normalize_path(path)
+            path = fusepath.normalize_path(path)
 
             if dbutils.get_file(path) is not None:
                 self._remove_file_from_db(path)
@@ -344,9 +338,9 @@ class CouchFSDocument(fuse.Fuse):
         """
         #logger.info('mkdir %s' % path)
         try:
-            path = _normalize_path(path)
+            path = fusepath.normalize_path(path)
             (folder_path, name) = _path_split(path)
-            folder_path = _normalize_path(folder_path)
+            folder_path = fusepath.normalize_path(folder_path)
 
             now = get_current_date()
             folder = dbutils.get_folder(self.db, path)
@@ -377,7 +371,7 @@ class CouchFSDocument(fuse.Fuse):
         # TODO remove file/attr cache
         #logger.info('rmdir %s' % path)
         try:
-            path = _normalize_path(path)
+            path = fusepath.normalize_path(path)
             folder = dbutils.get_folder(self.db, path)
             dbutils.delete_folder(self.db, folder)
             self._clean_cache(path)
@@ -393,8 +387,8 @@ class CouchFSDocument(fuse.Fuse):
         """
         logger.info("path rename %s -> %s: " % (pathfrom, pathto))
         try:
-            pathfrom = _normalize_path(pathfrom)
-            pathto = _normalize_path(pathto)
+            pathfrom = fusepath.normalize_path(pathfrom)
+            pathto = fusepath.normalize_path(pathto)
 
             file_doc = dbutils.get_file(self.db, pathfrom)
             if file_doc is not None:
@@ -450,7 +444,6 @@ class CouchFSDocument(fuse.Fuse):
                     # was moved
                     (file_path_from, name) = _path_split(pathfrom)
                     self._update_parent_folder(file_path_from)
-
 
                 dbutils.update_folder(self.db, folder_doc)
                 names = dbutils.name_cache.get(pathfrom)
@@ -539,7 +532,7 @@ class CouchFSDocument(fuse.Fuse):
             dbutils.update_folder(self.db, folder)
 
     def _is_found(self, path):
-        path = _normalize_path(path)
+        path = fusepath.normalize_path(path)
         file_doc = dbutils.get_file(self.db, path)
         if file_doc is not None:
             #logger.info('%s found' % path)
@@ -596,13 +589,13 @@ class CouchFSDocument(fuse.Fuse):
 
     def _create_new_file_in_db(self, path, binary_id):
         (file_path, name) = _path_split(path)
-        file_path = _normalize_path(file_path)
+        file_path = fusepath.normalize_path(file_path)
         (mime_type, encoding) = mimetypes.guess_type(path)
         rev = self.db[binary_id]["_rev"]
         now = get_current_date()
         newFile = {
             "name": name.decode('utf8'),
-            "path": _normalize_path(file_path).decode('utf8'),
+            "path": fusepath.normalize_path(file_path).decode('utf8'),
             "binary": {
                 "file": {
                     "id": binary_id,
@@ -628,15 +621,6 @@ class CouchFSDocument(fuse.Fuse):
             pass
         dbutils.delete_file(self.db, file_doc)
 
-
-    def _is_in_list_cache(self, path):
-        dirname, filename = ntpath.split(path)
-        if dirname == '/':
-            dirname = ''
-        names = dbutils.get_names(self.db, dirname.decode('utf-8'))
-        if not filename.decode('utf-8') in names:
-            logger.info('File does not exist in cache: %s' % path)
-
     def _add_to_cache(self, path, isfile=False):
         pass
 
@@ -646,6 +630,94 @@ class CouchFSDocument(fuse.Fuse):
         if isfile:
             self.binary_cache.remove(path)
             self.file_size_cache.remove(path)
+
+    def _get_names(self, path):
+        '''
+        Return name of files and folders located at folder path. It put every
+        return results in cache to fasten coming requests. Fuse runs a lot of
+        getattr after getting name list (requested via a readdir call).
+
+        Dirtly written to avoid running through folders and files too much
+        time.
+        '''
+        names = self.name_cache.get(path)
+        if names is None:
+            names = []
+
+            res = self.db.view('file/byFolder', key=path)
+            for doc in res:
+                name = doc.value["name"]
+                names.append(name)
+                filepath = os.path.join(path.encode('utf-8'), name.encode('utf-8'))
+                filepath = fusepath.normalize_path(filepath)
+                dbutils.file_cache.add(filepath, doc.value)
+                self._get_attr_from_db(filepath, isfile=True)
+
+            res = self.db.view('folder/byFolder', key=path)
+            for doc in res:
+                name = doc.value["name"]
+                names.append(name)
+                folderpath = os.path.join(path.encode('utf-8'), name.encode('utf-8'))
+                folderpath = fusepath.normalize_path(folderpath)
+                dbutils.folder_cache.add(folderpath, doc.value)
+                self._get_attr_from_db(folderpath, isfile=False)
+            self.name_cache.add(path, names)
+
+        return names
+
+    def _is_in_list_cache(self, path):
+        '''
+        When folder content list is request, all folder and file names are
+        cached. This returns true if given path is listed in that list.
+        '''
+        #logger.info('_is_in_list_cache: %s' % path)
+        dirname, filename = ntpath.split(path)
+        dirname = fusepath.normalize_path(dirname)
+        names = self._get_names(dirname)
+        if not filename.decode('utf-8') in names:
+            logger.info('File does not exist in cache: %s' % path)
+            return False
+        else:
+            return True
+
+    def _get_attr_from_db(self, path, isfile=None):
+        '''
+        Build fuse file attribute from data located in database. Check if path
+        corresponds to a folder first.
+        '''
+        st = CouchStat()
+        path = fusepath.normalize_path(path)
+
+        if isfile is None:
+            folder = dbutils.get_folder(self.db, path)
+            if folder is not None:
+                st.set_folder(folder)
+                self.attr_cache.add(path, st)
+                return st
+            else:
+                file_doc = dbutils.get_file(self.db, path)
+                if file_doc is not None:
+                    st.set_file(file_doc)
+                    self.attr_cache.add(path, st)
+                    return st
+                else:
+                    return None
+        elif isfile:
+            file_doc = dbutils.get_file(self.db, path)
+            if file_doc is not None:
+                st.set_file(file_doc)
+                self.attr_cache.add(path, st)
+                return st
+            else:
+                return None
+        else:
+            folder = dbutils.get_folder(self.db, path)
+            if folder is not None:
+                st.set_folder(folder)
+                self.attr_cache.add(path, st)
+                return st
+            else:
+                return None
 
 
 def get_current_date():
@@ -675,25 +747,12 @@ def get_date(ctime):
     return calendar.timegm(date.utctimetuple())
 
 
-def _normalize_path(path):
-    '''
-    Remove trailing slash and/or empty path part.
-    ex: /home//user/ becomes /home/user
-    '''
-    parts = path.split('/')
-    parts = [part for part in parts if part != '']
-    path = '/'.join(parts)
-    if len(path) == 0:
-        return ''
-    else:
-        return '/' + path
-
 
 def _path_split(path):
     '''
     Split folder path and file name.
     '''
-    _normalize_path(path)
+    fusepath.normalize_path(path)
     (folder_path, name) = os.path.split(path)
     if folder_path[-1:] == '/':
         folder_path = folder_path[:-(len(name) + 1)]
