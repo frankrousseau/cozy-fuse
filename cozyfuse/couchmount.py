@@ -173,6 +173,7 @@ class CouchFSDocument(fuse.Fuse):
         """
         try:
             logger.info('getattr %s' % path)
+            path = fusepath.normalize_path(path)
 
             # Try to get attribute from local cache.
             attr = self.attr_cache.get(path)
@@ -182,7 +183,7 @@ class CouchFSDocument(fuse.Fuse):
             else:
 
                 # It's the root folder.
-                if path == "/":
+                if path == "/" or path == '':
                     st = CouchStat()
                     st.set_root()
 
