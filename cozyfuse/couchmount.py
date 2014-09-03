@@ -16,7 +16,6 @@ import stat
 import subprocess
 import logging
 import datetime
-import calendar
 import ntpath
 import mimetypes
 import re
@@ -77,7 +76,7 @@ class CouchStat(fuse.Stat):
         self.st_mode = stat.S_IFDIR | 0o775
         self.st_nlink = 2
         if 'lastModification' in folder:
-            self.st_atime = get_date(folder['lastModification'])
+            self.st_atime = fusepath.get_date(folder['lastModification'])
             self.st_ctime = self.st_atime
             self.st_mtime = self.st_atime
 
@@ -89,7 +88,7 @@ class CouchStat(fuse.Stat):
         self.st_nlink = 1
         self.st_size = file_doc.get('size', 4096)
         if 'lastModification' in file_doc:
-            self.st_atime = get_date(file_doc['lastModification'])
+            self.st_atime = fusepath.get_date(file_doc['lastModification'])
             self.st_ctime = self.st_atime
             self.st_mtime = self.st_atime
 
@@ -342,7 +341,7 @@ class CouchFSDocument(fuse.Fuse):
             parent_path, name = ntpath.split(path)
             parent_path = fusepath.normalize_path(parent_path)
 
-            now = get_current_date()
+            now = fusepath.get_current_date()
             folder = dbutils.get_folder(self.db, path)
 
             # Check folder existence.
@@ -395,11 +394,11 @@ class CouchFSDocument(fuse.Fuse):
 
             file_doc = dbutils.get_file(self.db, pathfrom)
             if file_doc is not None:
-                (file_path, name) = _path_split(pathto)
+                file_path, name = ntpath.split(pathto)
                 file_doc.update({
                     "name": name,
                     "path": file_path,
-                    "lastModification": get_current_date()
+                    "lastModification": fusepath.get_current_date()
                 })
                 dbutils.update_file(self.db, file_doc)
 
@@ -407,7 +406,7 @@ class CouchFSDocument(fuse.Fuse):
                     self._update_parent_folder(file_path)
                     # Change lastModification for file_path_from in case of file
                     # was moved
-                    (file_path_from, name) = _path_split(pathfrom)
+                    file_path_from, name = ntpath.split(pathfrom)
                     self._update_parent_folder(file_path_from)
 
                 names = dbutils.name_cache.get(pathfrom)
@@ -418,11 +417,11 @@ class CouchFSDocument(fuse.Fuse):
 
             folder_doc = dbutils.get_folder(self.db, pathfrom)
             if folder_doc is not None:
-                (folder_path, name) = _path_split(pathto)
+                folder_path, name = ntpath.split(pathto)
                 folder_doc.update({
                     "name": name,
                     "path": folder_path,
-                    "lastModification": get_current_date()
+                    "lastModification": fusepath.get_current_date()
                 })
 
                 # Rename all subfiles
@@ -445,7 +444,7 @@ class CouchFSDocument(fuse.Fuse):
                     self._update_parent_folder(folder_path)
                     # Change lastModification for file_path_from in case of file
                     # was moved
-                    (file_path_from, name) = _path_split(pathfrom)
+                    file_path_from, name = ntpath.split(pathfrom)
                     self._update_parent_folder(file_path_from)
 
                 dbutils.update_folder(self.db, folder_doc)
@@ -533,7 +532,7 @@ class CouchFSDocument(fuse.Fuse):
         """
         folder = dbutils.get_folder(self.db, parent_folder)
         if folder is not None:
-            folder['lastModification'] = get_current_date()
+            folder['lastModification'] = fusepath.get_current_date()
             dbutils.update_folder(self.db, folder)
 
     def _is_found(self, path):
@@ -593,7 +592,7 @@ class CouchFSDocument(fuse.Fuse):
 
         file_doc = dbutils.get_file(self.db, path)
         file_doc['size'] = 0
-        file_doc['lastModification'] = get_current_date()
+        file_doc['lastModification'] = fusepath.get_current_date()
         dbutils.update_file(self.db, file_doc)
         self.binary_cache.add(path, '')
 
@@ -618,11 +617,11 @@ class CouchFSDocument(fuse.Fuse):
         Create new file document (metadata) in database. Set link with given
         binary id. Then update caches accordingly.
         '''
-        (file_path, name) = _path_split(path)
+        file_path, name = fusepath.split(path)
         file_path = fusepath.normalize_path(file_path)
         (mime_type, encoding) = mimetypes.guess_type(path)
         rev = self.db[binary_id]["_rev"]
-        now = get_current_date()
+        now = fusepath.get_current_date()
         newFile = {
             "name": name.decode('utf8'),
             "path": fusepath.normalize_path(file_path).decode('utf8'),
@@ -759,45 +758,6 @@ class CouchFSDocument(fuse.Fuse):
                 return st
             else:
                 return None
-
-
-def get_current_date():
-    """
-    Get current date : Return current date with format 'Y-m-d T H:M:S'
-        Exemple : 2014-05-07T09:17:48
-    """
-    return datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
-
-
-def get_date(ctime):
-    ctime = ctime[0:24]
-    try:
-        date = datetime.datetime.strptime(ctime, "%Y-%m-%dT%H:%M:%S")
-    except ValueError:
-        try:
-            date = datetime.datetime.strptime(ctime, "%Y-%m-%dT%H:%M:%S.%fZ")
-        except ValueError:
-            try:
-                date = datetime.datetime.strptime(
-                    ctime,
-                    "%a %b %d %Y %H:%M:%S")
-            except ValueError:
-                date = datetime.datetime.strptime(
-                    ctime,
-                    "%a %b %d %H:%M:%S %Y")
-    return calendar.timegm(date.utctimetuple())
-
-
-
-def _path_split(path):
-    '''
-    Split folder path and file name.
-    '''
-    fusepath.normalize_path(path)
-    (folder_path, name) = os.path.split(path)
-    if folder_path[-1:] == '/':
-        folder_path = folder_path[:-(len(name) + 1)]
-    return (folder_path, name)
 
 
 def unmount(path):
