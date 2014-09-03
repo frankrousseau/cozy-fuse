@@ -641,7 +641,6 @@ class CouchFSDocument(fuse.Fuse):
         if names is not None:
             names.append(name)
 
-
     def _remove_file_from_db(self, path):
         '''
         Remove binary document if it exists, then remove file document.
@@ -663,7 +662,7 @@ class CouchFSDocument(fuse.Fuse):
         Remove ref of given path from all caches.
         '''
         self.attr_cache.remove(path)
-        (dirname, name) = _path_split(path)
+        dirname, name = ntpath.split(path)
         names = self.name_cache.get(dirname)
         if names is not None:
             names.remove(name)

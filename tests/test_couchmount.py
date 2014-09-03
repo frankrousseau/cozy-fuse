@@ -2,6 +2,8 @@
 import pytest
 import sys
 import os
+import errno
+
 from uuid import uuid4
 
 sys.path.append('..')
@@ -129,11 +131,11 @@ def test_readdir(config_db):
 
 
 def test_open(config_db):
-    import errno
     fs = couchmount.CouchFSDocument(TESTDB, local_config.MOUNT_FOLDER,
                          'http://localhost:5984/%s' % TESTDB)
     assert 0 == fs.open('/file_test.txt', 32769)
     assert -errno.ENOENT == fs.open('/file_testa.txt', 32769)
+
 
 def test_mknod(config_db):
     fs = couchmount.CouchFSDocument(TESTDB, local_config.MOUNT_FOLDER,
@@ -145,6 +147,7 @@ def test_mknod(config_db):
     assert file_doc['path'] == ''
     assert file_doc['name'] == 'new_file.txt'
     assert os.path.exists(binary_path)
+
 
 def test_write(config_db):
     fs = couchmount.CouchFSDocument(TESTDB, local_config.MOUNT_FOLDER,
@@ -159,6 +162,7 @@ def test_write(config_db):
         content = binary.read()
         assert 'test_write_again' == content
 
+
 def test_release(config_db):
     fs = couchmount.CouchFSDocument(TESTDB, local_config.MOUNT_FOLDER,
                          'http://localhost:5984/%s' % TESTDB)
@@ -168,3 +172,25 @@ def test_release(config_db):
     db = dbutils.get_db(TESTDB)
     file_doc = dbutils.get_file(db, path)
     assert file_doc['size'] == len('test_write_again')
+
+def test_unlink(config_db):
+    fs = couchmount.CouchFSDocument(TESTDB, local_config.MOUNT_FOLDER,
+                         'http://localhost:5984/%s' % TESTDB)
+    path = '/new_file.txt'
+    fs.unlink(path)
+    db = dbutils.get_db(TESTDB)
+    assert dbutils.get_file(db, path) is None
+    assert -errno.ENOENT == fs.open('/file_testa.txt', 32769)
+    assert -errno.ENOENT == fs.getattr('/file_testa.txt')
+    assert 'new_file.txt' not in fs._get_names('')
+    (file_doc, binary_id, filename) = fs.binary_cache.get_file_metadata(path)
+    assert not os.path.exists(filename)
+
+def test_mkdir(config_db):
+    assert False
+
+def test_rmdir(config_db):
+    assert False
+
+def test_rename(config_db):
+    assert False

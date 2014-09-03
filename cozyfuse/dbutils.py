@@ -213,7 +213,7 @@ def delete_file(db, file_doc):
     '''
     db.delete(db[file_doc["_id"]])
 
-    dirname, filename = (fusepath.normalize_path(file_doc["path"]), file_doc["name"])
+    dirname, filename = file_doc["path"], file_doc["name"]
     file_cache.remove(fusepath.join(dirname, filename))
 
 
