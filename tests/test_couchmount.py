@@ -2,7 +2,6 @@
 import pytest
 import sys
 import os
-import time
 from uuid import uuid4
 
 sys.path.append('..')
@@ -21,6 +20,7 @@ if not os.path.exists(local_config.MOUNT_FOLDER):
 
 import cozyfuse.dbutils as dbutils
 import cozyfuse.couchmount as couchmount
+import cozyfuse.fusepath as fusepath
 
 TESTDB = 'cozy-fuse-test'
 MOUNT_FOLDER = os.path.join(os.path.expanduser('~'), TESTDB)
@@ -40,7 +40,7 @@ def create_file(db, path, name):
         'name': name,
         'size': 10,
         'mime': 'text/plain',
-        'creationDate': couchmount.get_current_date(),
+        'creationDate': fusepath.get_current_date(),
         'binary': { 'file': { 'id': BINARY_ID } }
     }
     db.save(testfile)
@@ -53,7 +53,7 @@ def create_folder(db, path, name):
         'class': 'folder',
         'path': path,
         'name': name,
-        'creationDate': couchmount.get_current_date(),
+        'creationDate': fusepath.get_current_date(),
     }
     db.save(testfolder)
 
@@ -168,5 +168,3 @@ def test_release(config_db):
     db = dbutils.get_db(TESTDB)
     file_doc = dbutils.get_file(db, path)
     assert file_doc['size'] == len('test_write_again')
-
-

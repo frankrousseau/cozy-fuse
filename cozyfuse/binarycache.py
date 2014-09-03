@@ -37,7 +37,8 @@ class BinaryCache:
         res = self.metadata_cache.get(path)
         if res is None:
             file_doc = dbutils.get_file(self.db, path)
-            binary_id = file_doc["binary"]["file"]["id"]
+            binary = file_doc["binary"]
+            binary_id = binary["file"]["id"]
             cache_file_folder = os.path.join(self.cache_path, binary_id)
             cache_file_name = os.path.join(cache_file_folder, 'file')
 

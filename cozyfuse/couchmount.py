@@ -559,7 +559,6 @@ class CouchFSDocument(fuse.Fuse):
             self.binary_cache.add(path)
 
         with self.binary_cache.get(path) as binary_attachment:
-
             content_length = self.file_size_cache.get(path)
             logger.info(binary_attachment)
             if content_length is None:
@@ -617,7 +616,7 @@ class CouchFSDocument(fuse.Fuse):
         Create new file document (metadata) in database. Set link with given
         binary id. Then update caches accordingly.
         '''
-        file_path, name = fusepath.split(path)
+        file_path, name = ntpath.split(path)
         file_path = fusepath.normalize_path(file_path)
         (mime_type, encoding) = mimetypes.guess_type(path)
         rev = self.db[binary_id]["_rev"]
