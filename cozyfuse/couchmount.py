@@ -199,7 +199,7 @@ class CouchFSDocument(fuse.Fuse):
             flags {string}: opening mode
         """
         try:
-            logger.info('open %s' % path)
+            logger.info('open %s, %s' % (flags, path))
 
             return self._is_found(path)
         except Exception as e:
@@ -230,14 +230,10 @@ class CouchFSDocument(fuse.Fuse):
             buf {buffer}: data to write
         """
         logger.info('write %s' % path)
-        path = fusepath._normalize_path(path)
+        path = fusepath.normalize_path(path)
 
-        if self.binary_cache.is_cached(path):
-            self.binary_cache.update(path, offset, buf)
-        else:
-            if path not in self.writeBuffers:
-                self.writeBuffers[path] = ''
-            self.writeBuffers[path] = self.writeBuffers[path] + buf
+        self.binary_cache.update(path, buf, offset)
+        #logger.info(self.get_file_metadata(path))
         return len(buf)
 
     def release(self, path, fuse_file_info):
@@ -250,22 +246,15 @@ class CouchFSDocument(fuse.Fuse):
             to an open file: all file descriptors are closed and
             all memory mappings are unmapped.
         """
-        # TODO add file to cache
-
         try:
             logger.info('release %s' % path)
-            path = _normalize_path(path)
+            path = fusepath.normalize_path(path)
 
-            if path in self.writeBuffers:
-                data = self.writeBuffers[path]
-                self._create_new_file(path, data)
-                self.writeBuffers.pop(path, None)
-            else:
-                with self.binary_cache.get(path) as binary:
-                    self._update_file(path, binary.read())
+            #logger.info(self.get_file_metadata(path))
+            self.binary_cache.update_size(path)
+            # Add update to upload to db queue
 
             # logger.info("release is done")
-            self._clean_cache(path, True)
             return 0
 
         except Exception as e:
@@ -274,24 +263,18 @@ class CouchFSDocument(fuse.Fuse):
 
     def mknod(self, path, mode, dev):
         """
-        Create special/ordinary file. Since it's a new file, the file and
-        and the binary metadata are created in the device. Then file is saved
-        as an attachment to the device.
-            path {string}: file path
-            mode {string}: file permissions
-            dev: if the file type is S_IFCHR or S_IFBLK, dev specifies the
-                 major and minor numbers of the newly created device special
-                 file
         """
         try:
-            logger.info('mknod %s' % path)
+            logger.info('mknod %s, %s, %s' % (dev, mode, path))
             path = fusepath.normalize_path(path)
 
             binary_id = self._create_empty_binary_in_db()
             self._create_new_file_in_db(path, binary_id)
+            self._create_new_file(path)
             self._update_parent_folder(path)
             logger.info('mknod is done for %s' % path)
             return 0
+
         except Exception as e:
             logger.exception(e)
             return -errno.ENOENT
@@ -304,10 +287,10 @@ class CouchFSDocument(fuse.Fuse):
             logger.info('unlink %s' % path)
             path = fusepath.normalize_path(path)
 
-            if dbutils.get_file(path) is not None:
-                self._remove_file_from_db(path)
+            if dbutils.get_file(self.db, path) is not None:
                 self.binary_cache.remove(path)
                 self._clean_cache(path, True)
+                self._remove_file_from_db(path)
                 self._update_parent_folder(path)
                 return 0
             else:
@@ -548,6 +531,7 @@ class CouchFSDocument(fuse.Fuse):
         with self.binary_cache.get(path) as binary_attachment:
 
             content_length = self.file_size_cache.get(path)
+            logger.info(binary_attachment)
             if content_length is None:
                 fileno = binary_attachment.fileno()
                 content_length = os.fstat(fileno).st_size
@@ -563,29 +547,31 @@ class CouchFSDocument(fuse.Fuse):
 
         return buf
 
-    def _create_new_file(self, path, data):
-        file_doc = dbutils.get_file(self.db, path)
+    def _create_new_file(self, path):
         #binary_id = file_doc["binary"]["file"]["id"]
-        self.binary_cache.add(path, data)
         # TODO Run that part into a thread and run it in a queue
         #self.db.put_attachment(self.db[binary_id],
         #                       data,
         #                       filename="file")
-        file_doc['size'] = len(data)
-        file_doc['lastModification'] = get_current_date()
         # TODO do that after uploading.
         #binary = self.db[binary_id]
         #file_doc['binary']['file']['rev'] = binary['_rev']
-        dbutils.update_file(self.db, file_doc)
 
-    def _update_file(self, path, data):
-        # Upload file from cache via a thread
-        pass
+        file_doc = dbutils.get_file(self.db, path)
+        file_doc['size'] = 0
+        file_doc['lastModification'] = get_current_date()
+        dbutils.update_file(self.db, file_doc)
+        self.binary_cache.add(path, '')
+
+    def _update_file(self, path, data, offset):
+        logger.info('update file: %s' % path)
+        self.binary_cache.update(path, data, offset)
 
     def _create_empty_binary_in_db(self):
         new_binary = {"docType": "Binary"}
         binary_id = self.db.create(new_binary)
         self.db.put_attachment(self.db[binary_id], '', filename="file")
+        return binary_id
 
     def _create_new_file_in_db(self, path, binary_id):
         (file_path, name) = _path_split(path)
@@ -608,24 +594,28 @@ class CouchFSDocument(fuse.Fuse):
             'lastModification': now,
         }
         dbutils.create_file(self.db, newFile)
+        names = self.name_cache.get(file_path)
+        if names is not None:
+            names.append(name)
 
-    def _remove_path_from_db(self, path):
+
+    def _remove_file_from_db(self, path):
         '''
         Remove binary if it exists, then remove file document.
         '''
         file_doc = dbutils.get_file(self.db, path)
-        binary_id = file_doc["binary"]["file"]["id"]
-        try:
-            self.db.delete(self.db[binary_id])
-        except ResourceNotFound:
-            pass
+        if file_doc["binary"] is not None and 'file' in file_doc["binary"]:
+            binary_id = file_doc["binary"]["file"]["id"]
+            try:
+                self.db.delete(self.db[binary_id])
+            except ResourceNotFound:
+                pass
         dbutils.delete_file(self.db, file_doc)
 
     def _add_to_cache(self, path, isfile=False):
         pass
 
     def _clean_cache(self, path, isfile=False):
-        self.writeBuffers.pop(path, None)
         self.attr_cache.remove(path)
         if isfile:
             self.binary_cache.remove(path)

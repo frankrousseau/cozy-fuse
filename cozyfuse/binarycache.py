@@ -75,7 +75,7 @@ class BinaryCache:
 
         # Download file.
 
-        if data:
+        if data is not None:
             with open(filename, 'wb') as fd:
                 fd.write(data)
         else:
@@ -89,15 +89,19 @@ class BinaryCache:
                     for chunk in req.iter_content(1024):
                         fd.write(chunk)
 
-        # Update metadata.
-        file_doc['size'] = os.path.getsize(filename)
-        self.mark_file_as_stored(file_doc)
+            # Update metadata.
+            file_doc['size'] = os.path.getsize(filename)
+            self.mark_file_as_stored(file_doc)
 
-    def update(self, path, offset, buf):
-        with self.get(path, 'wb') as binary:
+    def update_size(self, path):
+        (file_doc, binary_id, filename) = self.get_file_metadata(path)
+        file_doc['size'] = os.path.getsize(filename)
+        dbutils.update_file(self.db, file_doc)
+
+    def update(self, path, data, offset):
+        with self.get(path, 'ab') as binary:
             binary.seek(offset)
-            binary.write(buf)
-            binary.close()
+            binary.write(data)
 
     def remove(self, path):
         '''
@@ -119,8 +123,7 @@ class BinaryCache:
             file_doc['storage'] = [self.name]
         elif not (self.name in file_doc['storage']):
             file_doc['storage'].append(self.name)
-
-        self.db.save(file_doc)
+        dbutils.update_file(self.db, file_doc)
 
     def mark_file_as_not_stored(self, file_doc):
         '''

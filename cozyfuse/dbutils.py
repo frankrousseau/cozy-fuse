@@ -168,8 +168,8 @@ def update_file(db, file_doc):
     current_file_doc = db[file_doc["_id"]]
     file_doc["_rev"] = current_file_doc["_rev"]
     db.save(file_doc)
-    dirname, filename = (fusepath.normalize_path(file_doc["path"]), file_doc["name"])
-    file_cache.add(fusepath.join(dirname, filename), file_doc)
+    path = fusepath.join(file_doc["path"], file_doc["name"])
+    file_cache.add(path, file_doc)
 
 
 def get_file(db, path):
