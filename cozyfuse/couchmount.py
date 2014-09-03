@@ -354,7 +354,7 @@ class CouchFSDocument(fuse.Fuse):
             else:
                 dbutils.create_folder(self.db, {
                     "name": name,
-                    "path": path,
+                    "path": parent_path,
                     "docType": "Folder",
                     'creationDate': now,
                     'lastModification': now,
@@ -403,17 +403,6 @@ class CouchFSDocument(fuse.Fuse):
                 })
                 dbutils.update_file(self.db, file_doc)
 
-                if root:
-                    self._update_parent_folder(file_path)
-                    # Change lastModification for file_path_from in case of file
-                    # was moved
-                    file_path_from, name = ntpath.split(pathfrom)
-                    self._update_parent_folder(file_path_from)
-
-                names = dbutils.name_cache.get(pathfrom)
-                if names is not None:
-                    dbutils.name_cache.remove(pathfrom)
-                    dbutils.name_cache.add(pathto, names)
                 return 0
 
             folder_doc = dbutils.get_folder(self.db, pathfrom)
@@ -441,19 +430,28 @@ class CouchFSDocument(fuse.Fuse):
                     child_pathto = os.path.join(folder_path, name, res.value['name'])
                     self.rename(child_pathfrom, child_pathto, False)
 
-                if root:
-                    self._update_parent_folder(folder_path)
-                    # Change lastModification for file_path_from in case of file
-                    # was moved
-                    file_path_from, name = ntpath.split(pathfrom)
-                    self._update_parent_folder(file_path_from)
-
                 dbutils.update_folder(self.db, folder_doc)
-                names = dbutils.name_cache.get(pathfrom)
-                if names is not None:
-                    dbutils.name_cache.remove(pathfrom)
-                    dbutils.name_cache.add(pathto, names)
 
+            parent_path_from, namefrom = ntpath.split(pathfrom)
+            parent_path_to, nameto = ntpath.split(pathto)
+
+            if root:
+                self._update_parent_folder(parent_path_from)
+                self._update_parent_folder(parent_path_to)
+
+            names = dbutils.name_cache.get(parent_path_from)
+            if names is not None:
+                names.remove(namefrom)
+                names.add(parent_path_from, names)
+
+            names = dbutils.name_cache.get(parent_path_to)
+            if names is not None:
+                names.add(nameto)
+                names.add(parent_path_to, names)
+
+            if folder_doc is None and file_doc is None:
+                return -errno.ENOENT
+            else:
                 return 0
 
         except Exception as e:
@@ -701,6 +699,8 @@ class CouchFSDocument(fuse.Fuse):
                 folderpath = fusepath.normalize_path(folderpath)
                 dbutils.folder_cache.add(folderpath, doc.value)
                 self._get_attr_from_db(folderpath, isfile=False)
+
+            names.sort()
             self.name_cache.add(path, names)
 
         return names

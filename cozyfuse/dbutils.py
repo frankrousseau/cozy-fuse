@@ -154,8 +154,15 @@ def update_folder(db, folder):
     current_folder = db[folder["_id"]]
     folder["_rev"] = current_folder["_rev"]
     db.save(folder)
+
     dirname, filename = (folder["path"], folder["name"])
-    folder_cache.add(fusepath.join(dirname, filename), folder)
+    newpath = fusepath.join(dirname, filename)
+
+    dirname, filename = (current_folder["path"], current_folder["name"])
+    oldpath = fusepath.join(dirname, filename)
+
+    folder_cache.remove(oldpath)
+    folder_cache.add(newpath, folder)
 
 
 def delete_folder(db, folder):
@@ -165,7 +172,7 @@ def delete_folder(db, folder):
     db.delete(db[folder["_id"]])
 
     dirname, filename = (folder["path"], folder["name"])
-    folder_cache.add(fusepath.join(dirname, filename), folder)
+    folder_cache.remove(fusepath.join(dirname, filename))
 
 
 def create_file(db, file_doc):
@@ -203,8 +210,15 @@ def update_file(db, file_doc):
     current_file_doc = db[file_doc["_id"]]
     file_doc["_rev"] = current_file_doc["_rev"]
     db.save(file_doc)
-    path = fusepath.join(file_doc["path"], file_doc["name"])
-    file_cache.add(path, file_doc)
+
+    dirname, filename = (file_doc["path"], file_doc["name"])
+    newpath = fusepath.join(dirname, filename)
+
+    dirname, filename = (current_file_doc["path"], current_file_doc["name"])
+    oldpath = fusepath.join(dirname, filename)
+
+    file_cache.remove(oldpath)
+    file_cache.add(newpath, file_doc)
 
 
 def delete_file(db, file_doc):

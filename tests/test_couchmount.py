@@ -97,6 +97,8 @@ def config_db(request):
     create_file(db, '', 'file_test.txt')
     create_file(db, '/A', 'test.sh')
     create_folder(db, '', 'A')
+    create_folder(db, '/A', 'B')
+    create_folder(db, '', 'C')
 
     def fin():
         dbutils.remove_db(name)
@@ -108,7 +110,7 @@ def test_get_names(config_db):
     fs = couchmount.CouchFSDocument(TESTDB, local_config.MOUNT_FOLDER,
                          'http://localhost:5984/%s' % TESTDB)
     names = fs._get_names('')
-    assert names == ['file_test.txt', 'A']
+    assert names == ['A', 'C', 'file_test.txt']
     assert fs._is_in_list_cache('/A')
     assert not fs._is_in_list_cache('/B')
 
@@ -127,7 +129,7 @@ def test_readdir(config_db):
     fs = couchmount.CouchFSDocument(TESTDB, local_config.MOUNT_FOLDER,
                          'http://localhost:5984/%s' % TESTDB)
     result = [name.name for name in fs.readdir('/', 0)]
-    assert result == ['.', '..', 'file_test.txt', 'A']
+    assert result == ['.', '..', 'A', 'C', 'file_test.txt']
 
 
 def test_open(config_db):
@@ -173,6 +175,7 @@ def test_release(config_db):
     file_doc = dbutils.get_file(db, path)
     assert file_doc['size'] == len('test_write_again')
 
+
 def test_unlink(config_db):
     fs = couchmount.CouchFSDocument(TESTDB, local_config.MOUNT_FOLDER,
                          'http://localhost:5984/%s' % TESTDB)
@@ -180,17 +183,60 @@ def test_unlink(config_db):
     fs.unlink(path)
     db = dbutils.get_db(TESTDB)
     assert dbutils.get_file(db, path) is None
-    assert -errno.ENOENT == fs.open('/file_testa.txt', 32769)
-    assert -errno.ENOENT == fs.getattr('/file_testa.txt')
+    assert -errno.ENOENT == fs.open(path, 32769)
+    assert -errno.ENOENT == fs.getattr(path)
     assert 'new_file.txt' not in fs._get_names('')
-    (file_doc, binary_id, filename) = fs.binary_cache.get_file_metadata(path)
+    (file_doC, binary_id, filename) = fs.binary_cache.get_file_metadata(path)
     assert not os.path.exists(filename)
 
+
 def test_mkdir(config_db):
-    assert False
+    fs = couchmount.CouchFSDocument(TESTDB, local_config.MOUNT_FOLDER,
+                                    'http://localhost:5984/%s' % TESTDB)
+    db = dbutils.get_db(TESTDB)
+    path = '/new_dir'
+    fs.mkdir(path, '')
+    folder = dbutils.get_folder(db, path)
+    assert folder["path"] == ''
+    assert folder["name"] == 'new_dir'
+
 
 def test_rmdir(config_db):
-    assert False
+    fs = couchmount.CouchFSDocument(TESTDB, local_config.MOUNT_FOLDER,
+                                    'http://localhost:5984/%s' % TESTDB)
+    db = dbutils.get_db(TESTDB)
+    path = '/new_dir'
+    fs.rmdir(path)
+    assert dbutils.get_folder(db, path) is None
+    assert -errno.ENOENT == fs.getattr('/new_dir')
+    assert 'new_dir' not in fs._get_names('')
+
 
 def test_rename(config_db):
-    assert False
+    fs = couchmount.CouchFSDocument(TESTDB, local_config.MOUNT_FOLDER,
+                                    'http://localhost:5984/%s' % TESTDB)
+    db = dbutils.get_db(TESTDB)
+    pathfrom = '/file_test.txt'
+    pathto = '/A/test_doc.txt'
+    fs.rename(pathfrom, pathto)
+
+    assert dbutils.get_file(db, pathfrom) is None
+    assert -errno.ENOENT == fs.open(pathfrom, 32769)
+    assert -errno.ENOENT == fs.getattr(pathfrom)
+    assert 'new_file.txt' not in fs._get_names('')
+
+    (file_doc, binary_id, binary_path) = \
+        fs.binary_cache.get_file_metadata(pathto)
+    assert file_doc['path'] == '/A'
+    assert file_doc['name'] == 'test_doc.txt'
+    assert -errno.ENOENT != fs.open(pathto, 32769)
+    assert -errno.ENOENT != fs.getattr(pathto)
+
+    pathfrom = '/A'
+    pathto = '/C'
+    fs.rename(pathfrom, pathto)
+    assert dbutils.get_file(db, '/A/test.sh') is None
+    assert dbutils.get_folder(db, '/A/B') is None
+    assert dbutils.get_file(db, '/C/test.sh') is not None
+    assert dbutils.get_folder(db, '/C/B') is not None
+
