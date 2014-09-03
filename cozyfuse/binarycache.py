@@ -31,7 +31,7 @@ class BinaryCache:
 
     def get_file_metadata(self, path):
         '''
-        Return file metadata based on given path. The corresponding file doc is
+        Returns file metadata based on given path. The corresponding file doc is
         returned with the linked binary ID and the cached file path.
         '''
         res = self.metadata_cache.get(path)
@@ -47,7 +47,7 @@ class BinaryCache:
 
     def is_cached(self, path):
         '''
-        Return True is the file is already present in the cache folder.
+        Returns True is the file is already present in the cache folder.
         '''
         (file_doc, binary_id, filename) = self.get_file_metadata(path)
 
@@ -63,8 +63,11 @@ class BinaryCache:
 
     def add(self, path, data=None):
         '''
-        Download binary from local CouchDB and save it in the cache folder.
-        File is marked as stored in the file metadata.
+        If no data is given, it downloads the binary from configured CouchDB
+        and save it in the cache folder. File is marked as stored in the file
+        metadata.
+        If data is given, it creates a new binary with that data but don't
+        upload anything in CouchDB.
         '''
         (file_doc, binary_id, filename) = self.get_file_metadata(path)
         cache_file_folder = os.path.join(self.cache_path, binary_id)
@@ -73,8 +76,7 @@ class BinaryCache:
         if not os.path.isdir(cache_file_folder):
             os.mkdir(cache_file_folder)
 
-        # Download file.
-
+        # Create file.
         if data is not None:
             with open(filename, 'wb') as fd:
                 fd.write(data)
@@ -89,23 +91,31 @@ class BinaryCache:
                     for chunk in req.iter_content(1024):
                         fd.write(chunk)
 
-            # Update metadata.
-            file_doc['size'] = os.path.getsize(filename)
-            self.mark_file_as_stored(file_doc)
+        # Update metadata.
+        file_doc['size'] = os.path.getsize(filename)
+        self.mark_file_as_stored(file_doc)
 
     def update_size(self, path):
+        '''
+        Get size of current cached binary and update file size metadata with
+        information from the binary.
+        '''
         (file_doc, binary_id, filename) = self.get_file_metadata(path)
         file_doc['size'] = os.path.getsize(filename)
         dbutils.update_file(self.db, file_doc)
 
     def update(self, path, data, offset):
+        '''
+        Write on the cached binary of file located at path in the virtual file
+        system. Offset is where the writing should start.
+        '''
         with self.get(path, 'ab') as binary:
             binary.seek(offset)
             binary.write(data)
 
     def remove(self, path):
         '''
-        Remove file from cache.
+        Remove file from cache. Mark file as not stored in the database.
         '''
         (file_doc, binary_id, filename) = self.get_file_metadata(path)
 
