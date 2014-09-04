@@ -6,6 +6,12 @@ import exceptions
 import dbutils
 import cache
 
+import logging
+import local_config
+logger = logging.getLogger(__name__)
+local_config.configure_logger(logger)
+
+
 
 class BinaryCache:
     '''
@@ -54,7 +60,7 @@ class BinaryCache:
 
         return os.path.exists(filename)
 
-    def get(self, path, mode='rb'):
+    def get(self, path, mode='r'):
         '''
         Returns the required file from the cache (local file system).
         '''
@@ -72,6 +78,7 @@ class BinaryCache:
         '''
         (file_doc, binary_id, filename) = self.get_file_metadata(path)
         cache_file_folder = os.path.join(self.cache_path, binary_id)
+        logger.info('binay_cache.add: %s %s' % (path, filename))
 
         # Create cache folder for given binary
         if not os.path.isdir(cache_file_folder):
@@ -92,9 +99,9 @@ class BinaryCache:
                     for chunk in req.iter_content(1024):
                         fd.write(chunk)
 
-        # Update metadata.
-        file_doc['size'] = os.path.getsize(filename)
-        self.mark_file_as_stored(file_doc)
+            # Update metadata.
+            file_doc['size'] = os.path.getsize(filename)
+            self.mark_file_as_stored(file_doc)
 
     def update_size(self, path):
         '''
@@ -102,16 +109,20 @@ class BinaryCache:
         information from the binary.
         '''
         (file_doc, binary_id, filename) = self.get_file_metadata(path)
+        logger.info('update_size: %s' % path)
         file_doc['size'] = os.path.getsize(filename)
         dbutils.update_file(self.db, file_doc)
+        self.metadata_cache.add(path, (file_doc, binary_id, filename))
+        return file_doc['size']
 
-    def update(self, path, data, offset):
+    def update(self, path, data, mode='ab'):
         '''
         Write on the cached binary of file located at path in the virtual file
         system. Offset is where the writing should start.
         '''
-        with self.get(path, 'ab') as binary:
-            binary.seek(offset)
+        logger.info('binary_cache.update: %s' % path)
+        with self.get(path, mode) as binary:
+            logger.info('binary_cache.update: %s' % binary)
             binary.write(data)
 
     def remove(self, path):
@@ -123,6 +134,7 @@ class BinaryCache:
         cache_file_folder = os.path.join(self.cache_path, binary_id)
         if os.path.exists(cache_file_folder):
             shutil.rmtree(cache_file_folder)
+        self.metadata_cache.remove(path)
         self.mark_file_as_not_stored(file_doc)
 
     def mark_file_as_stored(self, file_doc):

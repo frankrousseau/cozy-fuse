@@ -140,7 +140,6 @@ class CouchFSDocument(fuse.Fuse):
         logger.info('- Replication configured')
 
         # Configure cache and create required folders
-        self.writeBuffers = {}
         device_path = os.path.join(CONFIG_FOLDER, device_name)
         self.binary_cache = binarycache.BinaryCache(
             device_name, device_path, self.rep_source, mountpoint)
@@ -249,10 +248,13 @@ class CouchFSDocument(fuse.Fuse):
             path {string}: file path
             buf {buffer}: data to write
         """
-        logger.info('write %s' % path)
+        logger.info('write %s: %s' % (offset, path))
         path = fusepath.normalize_path(path)
 
-        self.binary_cache.update(path, buf, offset)
+        if offset == 0:
+            self.binary_cache.update(path, buf, 'wb')
+        else:
+            self.binary_cache.update(path, buf, 'ab')
         return len(buf)
 
     def release(self, path, fuse_file_info):
@@ -263,9 +265,19 @@ class CouchFSDocument(fuse.Fuse):
         try:
             logger.info('release %s' % path)
             path = fusepath.normalize_path(path)
+            logger.info(fuse_file_info)
 
-            self.binary_cache.update_size(path)
-            self._get_attr_from_db(path, isfile=True)  # Update attr cache
+            try:
+                size = self.binary_cache.update_size(path)
+                self.file_size_cache.add(path, size)
+            except ResourceNotFound:
+                logger.info('release warn: file not found in db %s' % path)
+                self._clean_cache(path)
+            try:
+                self._get_attr_from_db(path, isfile=True)  # Update attr cache
+            except ResourceNotFound:
+                self._clean_cache(path)
+            self._add_to_cache(path)
             return 0
 
         except Exception as e:
@@ -388,26 +400,28 @@ class CouchFSDocument(fuse.Fuse):
         """
         Rename file and subfiles (if it's a folder) in device.
         """
-        logger.info("path rename %s -> %s: " % (pathfrom, pathto))
+        logger.info("rename %s -> %s: " % (pathfrom, pathto))
         try:
             pathfrom = fusepath.normalize_path(pathfrom)
             pathto = fusepath.normalize_path(pathto)
 
             file_doc = dbutils.get_file(self.db, pathfrom)
             if file_doc is not None:
-                file_path, name = ntpath.split(pathto)
+                logger.info("rename is file: %s" % file_doc)
+                file_path, name = fusepath.split(pathto)
+
                 file_doc.update({
                     "name": name,
                     "path": file_path,
                     "lastModification": fusepath.get_current_date()
                 })
+                logger.info("rename is file updated: %s" % file_doc)
                 dbutils.update_file(self.db, file_doc)
-
-                return 0
 
             folder_doc = dbutils.get_folder(self.db, pathfrom)
             if folder_doc is not None:
-                folder_path, name = ntpath.split(pathto)
+                logger.info("rename is folder: %s" % file_doc)
+                folder_path, name = fusepath.split(pathto)
                 folder_doc.update({
                     "name": name,
                     "path": folder_path,
@@ -432,22 +446,27 @@ class CouchFSDocument(fuse.Fuse):
 
                 dbutils.update_folder(self.db, folder_doc)
 
-            parent_path_from, namefrom = ntpath.split(pathfrom)
-            parent_path_to, nameto = ntpath.split(pathto)
+            parent_path_from, namefrom = fusepath.split(pathfrom)
+            parent_path_to, nameto = fusepath.split(pathto)
 
+            logger.info("rename : %s %s %s %s" % (parent_path_from, namefrom,
+                parent_path_to, nameto))
             if root:
                 self._update_parent_folder(parent_path_from)
                 self._update_parent_folder(parent_path_to)
 
             names = dbutils.name_cache.get(parent_path_from)
-            if names is not None:
+            if names is not None and namefrom in names:
                 names.remove(namefrom)
                 names.add(parent_path_from, names)
 
             names = dbutils.name_cache.get(parent_path_to)
             if names is not None:
-                names.add(nameto)
+                names.append(nameto)
                 names.add(parent_path_to, names)
+
+            self._clean_cache(pathfrom)
+            self._add_to_cache(pathto)
 
             if folder_doc is None and file_doc is None:
                 return -errno.ENOENT
@@ -472,7 +491,7 @@ class CouchFSDocument(fuse.Fuse):
 
     def statfs(self):
         """
-        It is the file system globabl attributes.
+        It is the file system global attributes.
 
         Should return a tuple with the following 6 elements:
             - blocksize - size of file blocks, in bytes
@@ -559,7 +578,6 @@ class CouchFSDocument(fuse.Fuse):
 
         with self.binary_cache.get(path) as binary_attachment:
             content_length = self.file_size_cache.get(path)
-            logger.info(binary_attachment)
             if content_length is None:
                 fileno = binary_attachment.fileno()
                 content_length = os.fstat(fileno).st_size
@@ -593,13 +611,6 @@ class CouchFSDocument(fuse.Fuse):
         file_doc['lastModification'] = fusepath.get_current_date()
         dbutils.update_file(self.db, file_doc)
         self.binary_cache.add(path, '')
-
-    def _update_file(self, path, data, offset):
-        '''
-        Write given data in binary cache of given file.
-        '''
-        logger.info('update file: %s' % path)
-        self.binary_cache.update(path, data, offset)
 
     def _create_empty_binary_in_db(self):
         '''
@@ -653,21 +664,31 @@ class CouchFSDocument(fuse.Fuse):
         dbutils.delete_file(self.db, file_doc)
 
     def _add_to_cache(self, path, isfile=False):
-        pass
+        dirname, name = ntpath.split(path)
+        dirname = fusepath.normalize_path(dirname)
+        names = self.name_cache.get(dirname)
+        if names is not None and not name in names:
+            names.append(name)
 
     def _clean_cache(self, path, isfile=False):
         '''
         Remove ref of given path from all caches.
         '''
+        #logger.info('clean cache: %s' % path)
         self.attr_cache.remove(path)
+
         dirname, name = ntpath.split(path)
+        dirname = fusepath.normalize_path(dirname)
         names = self.name_cache.get(dirname)
-        if names is not None:
+        if names is not None and name in names:
             names.remove(name)
 
         if isfile:
             self.binary_cache.remove(path)
             self.file_size_cache.remove(path)
+            dbutils.file_cache.remove(path)
+        else:
+            dbutils.folder_cache.remove(path)
 
     def _get_names(self, path):
         '''
@@ -782,3 +803,4 @@ def mount(name, path):
     fs.multithreaded = 0
     logger.info('CouchDB Fuse configured for %s' % path)
     fs.main()
+    return fs

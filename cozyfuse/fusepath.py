@@ -2,6 +2,7 @@
 import os
 import datetime
 import calendar
+import ntpath
 
 def normalize_path(path):
     '''
@@ -22,6 +23,10 @@ def normalize_path(path):
 def join(basepath, filename):
     return normalize_path(os.path.join(basepath, filename))
 
+
+def split(path):
+    folder_path, name = ntpath.split(path)
+    return normalize_path(folder_path), name
 
 def get_current_date():
     """
