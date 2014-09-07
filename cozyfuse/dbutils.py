@@ -127,6 +127,7 @@ def create_folder(db, folder):
 
     dirname, filename = (folder["path"], folder["name"])
     folder_cache.add(fusepath.join(dirname, filename), folder)
+    return folder
 
 
 def get_folder(db, path):

@@ -148,17 +148,18 @@ def test_mknod(config_db):
         fs.binary_cache.get_file_metadata(path)
     assert file_doc['path'] == ''
     assert file_doc['name'] == 'new_file.txt'
-    assert os.path.exists(binary_path)
 
 
 def test_write(config_db):
     fs = couchmount.CouchFSDocument(TESTDB, local_config.MOUNT_FOLDER,
                          'http://localhost:5984/%s' % TESTDB)
     path = '/new_file.txt'
+    fs.open(path, os.O_WRONLY | os.O_APPEND)
     fs.write(path, 'test_write', 0)
     with fs.binary_cache.get(path) as binary:
         content = binary.read()
         assert 'test_write' == content
+
     fs.write(path, '_again', len('test_write'))
     with fs.binary_cache.get(path) as binary:
         content = binary.read()
@@ -180,13 +181,13 @@ def test_unlink(config_db):
     fs = couchmount.CouchFSDocument(TESTDB, local_config.MOUNT_FOLDER,
                          'http://localhost:5984/%s' % TESTDB)
     path = '/new_file.txt'
+    (file_doC, binary_id, filename) = fs.binary_cache.get_file_metadata(path)
     fs.unlink(path)
     db = dbutils.get_db(TESTDB)
     assert dbutils.get_file(db, path) is None
     assert -errno.ENOENT == fs.open(path, 32769)
     assert -errno.ENOENT == fs.getattr(path)
     assert 'new_file.txt' not in fs._get_names('')
-    (file_doC, binary_id, filename) = fs.binary_cache.get_file_metadata(path)
     assert not os.path.exists(filename)
 
 
