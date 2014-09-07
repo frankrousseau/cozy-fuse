@@ -44,6 +44,7 @@ logger.addHandler(HDLR)
 logger.setLevel(logging.INFO)
 
 
+
 class CouchStat(fuse.Stat):
     '''
     Default file descriptor.
@@ -342,10 +343,15 @@ class CouchFSDocument(fuse.Fuse):
             if (flags & 3) == os.O_WRONLY:
                 try:
                     size = self.binary_cache.update_size(path)
+                    logger.info('step 1')
                     self.file_size_cache.add(path, size)
+                    logger.info('step 2')
                     self._get_attr_from_db(path, isfile=True)
+                    logger.info('step 3')
                     self._add_to_cache(path)
+                    logger.info('file released')
                 except ResourceNotFound:
+                    logger.info('release error file not found')
                     self._clean_cache(path)
                 return 0
             else:
@@ -471,13 +477,6 @@ class CouchFSDocument(fuse.Fuse):
             logger.exception(e)
             return -errno.ENOENT
 
-    def utime(self, path, times):
-        """ TODO: look if something should be done there.
-        Change the access and/or modification times of a file
-        """
-        return 0
-
-
     def write(self, path, buf, offset):
         """
         Write data in binary cache of file located at given path.
@@ -488,7 +487,14 @@ class CouchFSDocument(fuse.Fuse):
         path = fusepath.normalize_path(path)
         fh = self.fd_cache.get(path)
         os.lseek(fh, offset, os.SEEK_SET)
-        return os.write(fh, buf)
+        val = os.write(fh, buf)
+        logger.info(val)
+        attr = self.attr_cache.get(path)
+        logger.info(attr)
+        attr.st_size = self.binary_cache.get_current_size(path)
+        logger.info(attr)
+        self.attr_cache.add(path, attr)
+        return val
 
     def fsync(self, path, isfsyncfile):
         logger.info('fsync %s, %s' % (path, isfsyncfile))
@@ -506,25 +512,29 @@ class CouchFSDocument(fuse.Fuse):
         logger.info('chown %s, %s, %s' % (path, uid, gid))
         return 0
 
-    def symlink(self, target, name):
-        logger.info('symlink %s, %s' % (target, name))
-        return 0
+    #def symlink(self, target, name):
+        #logger.info('symlink %s, %s' % (target, name))
+        #return 0
 
-    def link(self, target, name):
-        logger.info('link %s, %s' % (target, name))
-        return 0
+    #def link(self, target, name):
+        #logger.info('link %s, %s' % (target, name))
+        #return 0
 
-    def utimens(self, path, times=None):
-        logger.info('utimens %s, %s' % (path, times))
-        return 0
+    #def utime(self, path, times):
+        #logger.info('utime %s, %s' % (path, times))
+        #return 0
+
+    #def utimens(self, path, times=None):
+        #logger.info('utimens %s, %s' % (path, times))
+        #return 0
 
     def truncate(self, path, length, fh=None):
         logger.info('truncate %s, %s' % (path, length))
         return 0
 
-    def flush(self, path, fh):
-        logger.info('flush %s, %s' % (path, fh))
-        return 0
+    #def flush(self, path, fh):
+        #logger.info('flush %s, %s' % (path, fh))
+        #return 0
 
     def statfs(self):
         """

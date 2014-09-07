@@ -52,6 +52,13 @@ class BinaryCache:
             self.metadata_cache.add(path, res)
         return res
 
+    def get_current_size(self, path):
+        '''
+        Return size of cached file.
+        '''
+        (file_doc, binary_id, filename) = self.get_file_metadata(path)
+        return os.path.getsize(filename)
+
     def is_cached(self, path):
         '''
         Returns True is the file is already present in the cache folder.
