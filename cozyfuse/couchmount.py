@@ -270,7 +270,7 @@ class CouchFSDocument(fuse.Fuse):
             logger.info('open %s, %s' % (flags, path))
             path = fusepath.normalize_path(path)
             if self._is_found(path):
-                if (flags & 3) == os.O_RDONLY:
+                if (flags & 3) == os.O_RDONLY or (flags & 3) == os.O_RDWR:
                     if not self.binary_cache.is_cached(path):
                         self.binary_cache.add(path)
 
@@ -282,12 +282,12 @@ class CouchFSDocument(fuse.Fuse):
                     if not self.binary_cache.is_cached(path):
                         self.binary_cache.add(path, '')
                     (file_doc, binary_id, filename) = self.binary_cache.get_file_metadata(path)
-                    logger.info(filename)
                     fd = os.open(filename, flags)
                     self.fd_cache.add(path, fd)
                     return 0
 
                 else:
+                    logger.info('no write, noread')
                     return -errno.EINVAL
             else:
                 logger.error('File not found %s' % path)
@@ -502,7 +502,7 @@ class CouchFSDocument(fuse.Fuse):
 
     def access(self, path, mode):
         logger.info('access %s, %s' % (path, mode))
-        return 0
+        #return 0
 
     def chmod(self, path, mode):
         logger.info('chmod %s, %s' % (path, mode))
