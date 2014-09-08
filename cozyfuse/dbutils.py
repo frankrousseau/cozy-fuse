@@ -1,4 +1,3 @@
-import os
 import json
 import string
 import random
@@ -25,28 +24,31 @@ name_cache = cache.Cache()
 ATTR_VALIDITY_PERIOD = datetime.timedelta(seconds=10)
 
 
-def create_db(database):
+def create_db(name):
+    '''
+    Create a new name for given name.
+    '''
     server = Server('http://localhost:5984/')
     try:
-        db = server.create(database)
-        logger.info('[DB] Database %s created' % database)
+        db = server.create(name)
+        logger.info('[DB] Database %s created' % name)
     except PreconditionFailed:
-        db = server[database]
-        logger.info('[DB] Database %s already exists.' % database)
+        db = server[name]
+        logger.info('[DB] Database %s already exists.' % name)
 
     return db
 
 
-def get_db(database, credentials=True):
+def get_db(name, credentials=True):
     '''
-    Get or create given database from/in CouchDB.
+    Get or create given name from/in CouchDB.
     '''
     try:
         server = Server('http://localhost:5984/')
         if credentials:
             server.resource.credentials = \
-                local_config.get_db_credentials(database)
-        return server[database]
+                local_config.get_db_credentials(name)
+        return server[name]
     except Exception:
         logging.exception('[DB] Cannot connect to the database')
 
@@ -103,30 +105,40 @@ def get_device(name):
 
 
 def get_folders(db):
+    '''
+    Return all folders as a ViewResult list.
+    '''
     return db.view("folder/all")
 
 
 def get_files(db):
+    '''
+    Return all files as a ViewResult list.
+    '''
     return db.view("file/all")
 
 
 def create_folder(db, folder):
+    '''
+    Create a new folder and store it in the folder cache (path is the key).
+    '''
     folderid = db.create(folder)
     folder = db[folderid]
 
     dirname, filename = (folder["path"], folder["name"])
-    names = name_cache.get(dirname)
     folder_cache.add(fusepath.join(dirname, filename), folder)
-    if names is not None:
-        names.append(filename)
+    return folder
 
 
 def get_folder(db, path):
+    '''
+    Return folder of which path is equal to path. Try to get it from cache
+    first.
+    '''
     path = fusepath.normalize_path(path)
     try:
         folder = folder_cache.get(path)
-        file_doc = file_cache.get(path)
-        if folder is None and file_doc is None:
+        if folder is None:
             folder = list(db.view("folder/byFullPath", key=path))[0].value
             folder_cache.add(path, folder)
     except IndexError:
@@ -135,50 +147,55 @@ def get_folder(db, path):
 
 
 def update_folder(db, folder):
+    '''
+    Update given folder data. Retrieve last folder revision before doing it to
+    avoid conflicts.
+    Update folder cache too.
+    '''
     current_folder = db[folder["_id"]]
     folder["_rev"] = current_folder["_rev"]
     db.save(folder)
+
     dirname, filename = (folder["path"], folder["name"])
-    folder_cache.add(fusepath.join(dirname, filename), folder)
+    newpath = fusepath.join(dirname, filename)
+
+    dirname, filename = (current_folder["path"], current_folder["name"])
+    oldpath = fusepath.join(dirname, filename)
+
+    folder_cache.remove(oldpath)
+    folder_cache.add(newpath, folder)
 
 
 def delete_folder(db, folder):
+    '''
+    Delete given folder and remove it from cache.
+    '''
     db.delete(db[folder["_id"]])
 
-    dirname, filename = (fusepath.normalize_path(folder["path"]), folder["name"])
+    dirname, filename = (folder["path"], folder["name"])
     folder_cache.remove(fusepath.join(dirname, filename))
-
-    names = name_cache.get(dirname)
-    if names is not None:
-        names.remove(filename)
 
 
 def create_file(db, file_doc):
+    '''
+    Create given file and add it to the file cache (key is the file path).
+    '''
     fileid = db.create(file_doc)
     file_doc = db[fileid]
 
     dirname, filename = (fusepath.normalize_path(file_doc["path"]), file_doc["name"])
     file_cache.add(fusepath.join(dirname, filename), file_doc)
-    names = name_cache.get(dirname)
-    if names is not None:
-        names.append(filename)
-
-
-def update_file(db, file_doc):
-    current_file_doc = db[file_doc["_id"]]
-    file_doc["_rev"] = current_file_doc["_rev"]
-    db.save(file_doc)
-    dirname, filename = (fusepath.normalize_path(file_doc["path"]), file_doc["name"])
-    file_cache.add(fusepath.join(dirname, filename), file_doc)
 
 
 def get_file(db, path):
+    '''
+    Get file located at given path on the Couch FS. Add it to the cache.
+    '''
     path = fusepath.normalize_path(path)
 
     try:
-        folder = folder_cache.get(path)
         file_doc = file_cache.get(path)
-        if file_doc is None and folder is None:
+        if file_doc is None:
             file_doc = list(db.view("file/byFullPath", key=path))[0].value
             file_cache.add(path, file_doc)
     except IndexError:
@@ -186,37 +203,33 @@ def get_file(db, path):
     return file_doc
 
 
+def update_file(db, file_doc):
+    '''
+    Ensure file is latest revision then save it to database and update file
+    cache accordingly.
+    '''
+    current_file_doc = db[file_doc["_id"]]
+    file_doc["_rev"] = current_file_doc["_rev"]
+    db.save(file_doc)
+
+    dirname, filename = (file_doc["path"], file_doc["name"])
+    newpath = fusepath.join(dirname, filename)
+
+    dirname, filename = (current_file_doc["path"], current_file_doc["name"])
+    oldpath = fusepath.join(dirname, filename)
+
+    file_cache.remove(oldpath)
+    file_cache.add(newpath, file_doc)
+
+
 def delete_file(db, file_doc):
+    '''
+    Remove given file document from database and from file cache.
+    '''
     db.delete(db[file_doc["_id"]])
 
-    dirname, filename = (fusepath.normalize_path(file_doc["path"]), file_doc["name"])
+    dirname, filename = file_doc["path"], file_doc["name"]
     file_cache.remove(fusepath.join(dirname, filename))
-
-    names = name_cache.get(dirname)
-    if names is not None:
-        names.remove(filename)
-        name_cache.add(dirname, names)
-    return (dirname, filename, fusepath.join(dirname, filename))
-
-
-def get_names(db, path):
-    names = name_cache.get(path)
-    if names is None:
-        names = []
-
-        res = db.view('file/byFolder', key=path)
-        for doc in res:
-            name = doc.value["name"]
-            names.append(name)
-            file_cache.add(os.path.join(path, name), doc.value)
-
-        res = db.view('folder/byFolder', key=path)
-        for doc in res:
-            name = doc.value["name"]
-            names.append(name)
-            folder_cache.add(os.path.join(path, name), doc.value)
-
-    return names
 
 
 def get_random_key():
