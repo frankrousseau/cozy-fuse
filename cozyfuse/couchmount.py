@@ -269,25 +269,27 @@ class CouchFSDocument(fuse.Fuse):
         try:
             logger.info('open %s, %s' % (flags, path))
             path = fusepath.normalize_path(path)
+
             if self._is_found(path):
+                (file_doc, binary_id, filename) =  \
+                    self.binary_cache.get_file_metadata(path)
+
                 if (flags & 3) == os.O_RDONLY or (flags & 3) == os.O_RDWR:
                     if not self.binary_cache.is_cached(path):
                         self.binary_cache.add(path)
-
-                    (file_doc, binary_id, filename) = self.binary_cache.get_file_metadata(path)
                     fd = os.open(filename, flags)
                     self.fd_cache.add(path, fd)
                     return 0
+
                 elif (flags & 3) == os.O_WRONLY:
                     if not self.binary_cache.is_cached(path):
                         self.binary_cache.add(path, '')
-                    (file_doc, binary_id, filename) = self.binary_cache.get_file_metadata(path)
                     fd = os.open(filename, flags)
                     self.fd_cache.add(path, fd)
                     return 0
 
                 else:
-                    logger.info('no write, noread')
+                    logger.info('open: unrecognized flags %s' % flags)
                     return -errno.EINVAL
             else:
                 logger.error('File not found %s' % path)
